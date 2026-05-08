@@ -1,162 +1,155 @@
-# 部署指南（從零到自動部署，約 30 分鐘）
+# 部署現況與維運指南
 
-> 完成這份設定後，之後每次更新只要在電腦上修改 → `git push` → 1–2 分鐘自動上線。  
-> 不再需要手動下載 zip、拖到 Cloudflare 的麻煩。
-
----
-
-## 你需要的帳號（都免費）
-
-- ✅ GitHub 帳號（沒有就到 https://github.com 註冊）
-- ✅ Cloudflare 帳號（你已有）
-- ✅ 電腦上裝 [GitHub Desktop](https://desktop.github.com/)（圖形化介面，不用打指令）
+> 系統已於 2026-05-08 完成 GitHub 自動部署設定。本文件記錄目前架構與如何維護。
 
 ---
 
-## Step 1：把這個 repo 推上 GitHub（10 分鐘）
+## 目前已上線的服務
 
-### 1-1 在 GitHub 建一個空的 repo
-
-1. 打開 https://github.com/new
-2. **Repository name**：`iltc-care-tool`
-3. **Public** 或 **Private** 都可以（推薦 **Private**，因為 worker.js 含商業邏輯）
-4. **不要勾**「Add a README file」、「.gitignore」、「license」（我們已經有了）
-5. 點「**Create repository**」
-6. 出現的頁面**先不要關**，等等會用到 URL（類似 `https://github.com/你的帳號/iltc-care-tool.git`）
-
-### 1-2 用 GitHub Desktop 把資料夾推上去
-
-1. 把這個資料夾（解壓後的 `iltc-care-tool`）放到電腦你方便的位置（例如 `~/Documents/iltc-care-tool`）
-2. 打開 **GitHub Desktop**
-3. 上方選單 → **File → Add Local Repository**
-4. 選你剛剛放的資料夾 → **Add Repository**
-5. GitHub Desktop 會偵測到這是個尚未 init 的資料夾 → 它會問「create a repository」→ 點確認，輸入 commit message：`Initial commit` → 點「**Commit to main**」
-6. 右上角點「**Publish repository**」
-7. 名稱保持 `iltc-care-tool`，**取消勾選**「Keep this code private」如果你 1-1 選了 Public（兩邊要一致）
-8. 點「**Publish Repository**」
-
-✅ 完成後刷新 https://github.com/你的帳號/iltc-care-tool 應該能看到所有檔案
+| 服務 | 名稱 | 網址 | 部署方式 |
+|------|------|------|---------|
+| 前端 | iltc-care-tool（Pages） | https://iltc-care-tool.pages.dev | GitHub → Cloudflare Pages 自動 |
+| 後端 | billowing-river-dcf6iltc-backend（Worker） | https://billowing-river-dcf6iltc-backend.service-ed8.workers.dev | GitHub → Workers Builds 自動 |
+| 資料庫 | iltc-data（D1） | （內部） | 手動建立，binding 名 `DB` |
+| 快取 | iltc-kv（KV） | （內部） | 手動建立，binding 名 `KV` |
 
 ---
 
-## Step 2：讓 Cloudflare Pages 從 GitHub 自動 build / 部署（10 分鐘）
+## CI/CD 設定總覽
 
-### 2-1 刪掉舊的 Pages 專案（用過手動 zip 上傳的那個）
+### 前端（Cloudflare Pages）
 
-> 為了改成 GitHub 自動部署，最乾淨的做法是砍掉重建。網域 `iltc-frontends.pages.dev` 會保留。
+- **Pages 專案名**：`iltc-care-tool`
+- **Git repository**：`service-beep/iltc-care-tool`
+- **Production branch**：`main`
+- **Build command**：`cd frontend && npm install && npm run build`
+- **Build output directory**：`frontend/dist`
+- **Root directory**：留空（即 repo 根目錄）
 
-1. Cloudflare → Workers & Pages → 點 `iltc-frontends`
-2. **Settings** → 拉到最底 → **Delete project** → 輸入名稱確認
+### 後端（Cloudflare Workers Builds）
 
-### 2-2 建立連 GitHub 的新 Pages 專案
-
-1. Workers & Pages → **Create** → **Pages** 分頁 → **Connect to Git**
-2. 第一次會跳出 GitHub 授權頁 → 同意 Cloudflare 讀你的 repo
-3. 選 `iltc-care-tool` → **Begin setup**
-4. 設定欄位：
-   - **Project name**：`iltc-frontends`（保持原名 → 網址就還是 `iltc-frontends.pages.dev`）
-   - **Production branch**：`main`
-   - **Framework preset**：None
-   - **Build command**：`cd frontend && npm install && npm run build`
-   - **Build output directory**：`frontend/dist`
-   - **Root directory（Advanced）**：留空
-5. 點「**Save and Deploy**」
-6. 等 2–3 分鐘第一次 build 完成
-
-✅ 完成後 `https://iltc-frontends.pages.dev` 就是新版（內容跟之前一樣）。
+- **Worker 名**：`billowing-river-dcf6iltc-backend`
+- **Git repository**：`service-beep/iltc-care-tool`
+- **Production branch**：`main`
+- **Build command**：留空
+- **Deploy command**：`npx wrangler deploy`
+- **Path（Root directory）**：`/backend`
 
 ---
 
-## Step 3：讓 GitHub Actions 自動部署 Worker（10 分鐘）
-
-### 3-1 建立 Cloudflare API Token
-
-1. https://dash.cloudflare.com/profile/api-tokens
-2. **Create Token**
-3. 找到 **Edit Cloudflare Workers** 模板 → **Use template**
-4. Account 和 Zone Resources 保持預設（針對你的帳號／所有 zones）
-5. **Continue to summary** → **Create Token**
-6. 跳出來的 token（一長串，像 `abc123def456...`）**複製起來**（只顯示這一次！）
-
-### 3-2 拿 Cloudflare Account ID
-
-1. Cloudflare Dashboard 任何頁面，右側欄會顯示 **Account ID**（一長串十六進位）
-2. 點旁邊的複製按鈕
-
-### 3-3 把兩個值設到 GitHub repo Secrets
-
-1. 打開你的 GitHub repo → **Settings**（不是 Cloudflare 的 Settings）
-2. 左側選單最下面 → **Secrets and variables** → **Actions**
-3. **New repository secret** 兩次：
-   - Name: `CLOUDFLARE_API_TOKEN`，Value: 剛才的 token
-   - Name: `CLOUDFLARE_ACCOUNT_ID`，Value: 剛才的 Account ID
-4. 完成
-
-### 3-4 試跑一次
-
-1. GitHub Desktop → 在 `backend/worker.js` 隨便加一行註解
-2. 寫 commit message：`Test auto deploy` → **Commit to main** → **Push**
-3. 打開 GitHub repo 頁面 → **Actions** 分頁
-4. 應該看到一個正在跑的 workflow → 等綠色勾出現
-5. 完成後 Worker 就自動更新了
-
-✅ 從此你只要改 code → push → 自動上線
-
----
-
-## 之後的開發流程
+## 修改 code 的標準流程
 
 ### 改前端
-1. 在電腦編輯 `frontend/_source.html`
-2. GitHub Desktop → 看到改動 → 寫 commit message → **Commit** → **Push**
-3. 等 1–2 分鐘 Cloudflare Pages 自動 build 上線
+
+1. 編輯 GitHub 上的 `frontend/_source.html`（或本機改完 push）
+2. Commit 到 `main` 分支
+3. Cloudflare Pages 偵測到變動 → 自動 build & deploy
+4. 1-3 分鐘後 https://iltc-care-tool.pages.dev 顯示新版
 
 ### 改後端
-1. 在電腦編輯 `backend/worker.js`
-2. GitHub Desktop → **Commit** → **Push**
-3. 等 30–60 秒 GitHub Actions 自動部署
 
-### 看部署狀態
-- 前端：Cloudflare Pages → Deployments
-- 後端：GitHub repo → Actions
+1. 編輯 GitHub 上的 `backend/worker.js`（或 `backend/wrangler.toml`）
+2. Commit 到 `main` 分支
+3. Cloudflare Workers Builds 偵測到變動 → 自動 `npx wrangler deploy`
+4. 30-60 秒後 Worker 更新
+
+### 確認部署成功
+
+- **前端**：開新分頁進 https://iltc-care-tool.pages.dev，看頁尾版本號或硬重新整理（Cmd+Shift+R）
+- **後端**：訪問 https://billowing-river-dcf6iltc-backend.service-ed8.workers.dev/health 看 JSON 回應
 
 ---
 
-## 重要：Worker 的 Secrets 和 Bindings 不會自動同步
+## Worker 必要 Secrets 與 Bindings
 
-**API token / channel secret / D1 / KV 這些設定，仍然要在 Cloudflare Dashboard 手動設定一次：**
+> 這些設定**只放在 Cloudflare Dashboard**，不在 GitHub 上（為了安全）。Wrangler 部署時不會覆蓋。
 
 ### Secrets（Worker → Settings → Variables and Secrets）
-- `JWT_SECRET`
-- `LINE_CHANNEL_ID`
-- `LINE_CHANNEL_SECRET`
-- `LINE_REDIRECT_URI`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_REDIRECT_URI`
-- `GEMINI_API_KEY`
-- `ALLOWED_ORIGINS`
-- `FRONTEND_URL`
 
-### Bindings（Worker → Bindings）
-- `DB` → D1 database `iltc-data`
-- `KV` → KV namespace（建議叫 `iltc-kv`）
+| 變數名 | 說明 |
+|-------|------|
+| `JWT_SECRET` | 簽 JWT 用，至少 32 字元亂碼 |
+| `LINE_CHANNEL_ID` | LINE Login Channel ID |
+| `LINE_CHANNEL_SECRET` | LINE Login Channel Secret |
+| `LINE_REDIRECT_URI` | LINE callback 網址（後端 URL/api/auth/line/callback） |
+| `GOOGLE_CLIENT_ID` | Google OAuth Client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth Client Secret |
+| `GOOGLE_REDIRECT_URI` | Google callback 網址（後端 URL/api/auth/google/callback） |
+| `GEMINI_API_KEY` | Google AI Studio API Key |
+| `ALLOWED_ORIGINS` | 允許的前端網址（CORS），逗號分隔 |
+| `FRONTEND_URL` | OAuth 完成後跳回的前端網址 |
 
-> 這些只要設定一次，之後 wrangler 部署時不會被覆蓋。
-> 如果想完全用 code 管理，可以在 `wrangler.toml` 加上 `database_id` 和 `kv_namespaces id`，但建議手動 UI 設置就好。
+### Bindings（Worker → Settings → Bindings）
+
+| 類型 | 名稱（變數） | 對應資源 |
+|------|------|---------|
+| D1 Database | `DB` | iltc-data |
+| KV Namespace | `KV` | iltc-kv |
 
 ---
 
 ## 故障排除
 
-**Q: Pages build 失敗怎麼辦？**
-A: 點 Cloudflare Pages → Deployments → 失敗那筆 → View build log。看 `npm install` 或 `npm run build` 哪一行出錯。最常見：缺檔案、tailwind.config.js 有錯字、_source.html 有 JSX 語法錯誤。
+### Q: 前端推上去了，但網頁還是舊版
 
-**Q: Worker 部署成功但 Secrets 不見了？**
-A: 不會。Wrangler 部署只覆蓋 code，不動 Secrets / Bindings。
+- 強制重新整理瀏覽器（Cmd+Shift+R / Ctrl+Shift+R）
+- 確認 Cloudflare Pages → Deployments 有最新 build
+- 看頁尾版本號是不是新的
 
-**Q: 我可以用 `dev` 分支做測試嗎？**
-A: 可以。Cloudflare Pages 會自動為非 main 分支建立 preview URL（每個分支一個獨立預覽網址，不影響正式版）。
+### Q: Worker build 失敗
 
-**Q: 不想公開原始碼怎麼辦？**
-A: GitHub repo 設 Private 即可。Cloudflare 連接時還是可以讀（已授權）。
+- 看 Cloudflare → Worker → Settings → Build → Build history → View build → Logs
+- 最常見：`wrangler.toml` 的 `name` 跟 Worker 實際名字不一致 → 需要改 wrangler.toml
+- 或：Path 設成 `/` 而 worker.js 在 `/backend` → 改 Path 為 `/backend`
+
+### Q: 登入後 Safari 顯示「找不到伺服器」
+
+- FRONTEND_URL Secret 指向不存在的網址
+- 解法：到 Worker → Variables and Secrets → 改 `FRONTEND_URL` 為當前真正的前端網址
+
+### Q: 跨裝置同步不動 / D1 寫入失敗
+
+- 看 `ALLOWED_ORIGINS` 是否包含當前前端網址
+- 看瀏覽器 Console 有沒有 CORS 錯誤
+- 看 Worker logs（Cloudflare → Worker → Logs Live tail）
+
+### Q: AI 額度爆了（429 / quota_exceeded）
+
+- 看 KV → 該使用者今天是否超過 100 次（程式內限制）
+- 或：Gemini API Key 在 Google Cloud 該專案的免費 quota 用完
+- 解法：到 Google AI Studio 換新 Key 或開計費
+
+---
+
+## 後續維運待辦
+
+### 已完成 ✅
+
+- [x] GitHub 自動部署（前端 + 後端）
+- [x] 安全強化（依《愛長照 AI 工具開發準則》）
+- [x] 跨裝置雲端同步（D1）
+- [x] LINE / Google OAuth
+- [x] Gemini AI 整合
+- [x] 多語介面
+
+### 規劃中 🔜
+
+- [ ] 開啟所有後台 2FA（Cloudflare、GitHub、LINE、Google）
+- [ ] 撤銷舊 token 重發（之前對話中曾分享過）
+- [ ] 刪除多餘的空 Worker
+- [ ] 設定 dev 分支 + Preview 環境
+- [ ] 綁自訂網域（`medcare.ilong-termcare.com`）
+- [ ] D1 定期備份
+- [ ] 隱私權政策頁面
+- [ ] 用戶資料刪除功能
+
+---
+
+## 重要連結
+
+- **Notion 文件**：https://www.notion.so/ilong-termcare/07748fa795fa4b0fa188785522115ef9
+- **GitHub Repo**：https://github.com/service-beep/iltc-care-tool
+- **Cloudflare Dashboard**：https://dash.cloudflare.com
+- **LINE Developers**：https://developers.line.biz/console/
+- **Google Cloud Console**：https://console.cloud.google.com
+- **Google AI Studio**：https://aistudio.google.com
