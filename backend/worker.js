@@ -51,7 +51,13 @@ export default {
         if (request.method === 'GET') return getData(request, env, cors);
         if (request.method === 'PUT') return putData(request, env, cors);
       }
-      if (p === '/' || p === '/health') return json({ ok: true, service: 'iltc-backend', version: 'v3.3-hardened-20260502', model: 'gemini-2.5-flash' }, cors);
+      // === 多照顧者共享：邀請碼相關 ===
+      if (p === '/api/share/invite/create' && request.method === 'POST') return shareInviteCreate(request, env, cors);
+      if (p === '/api/share/invite/regenerate' && request.method === 'POST') return shareInviteRegenerate(request, env, cors);
+      if (p === '/api/share/redeem' && request.method === 'POST') return shareRedeem(request, env, cors);
+      if (p === '/api/share/list' && request.method === 'GET') return shareList(request, env, cors);
+      if (p === '/api/share/remove' && request.method === 'DELETE') return shareRemove(request, env, cors);
+      if (p === '/' || p === '/health') return json({ ok: true, service: 'iltc-backend', version: 'v3.4-sharing-20260509', model: 'gemini-2.5-flash' }, cors);
       return new Response('Not Found', { status: 404, headers: cors });
     } catch (e) {
       return safeError(e, cors, 500);
@@ -311,6 +317,28 @@ const repo = {
     if (!env.DB) return;
     try {
       await env.DB.prepare(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL)`).run();
+      // 邀請碼表（一個 patient 同時只有一張 active 的碼，永久有效直到主照顧者「重新產生」）
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS share_invites (
+        code TEXT PRIMARY KEY,
+        patient_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        patient_name TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL
+      )`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_invites_patient ON share_invites(patient_id, owner_user_id)`).run();
+      // 共享關係表（同一 patient 可被分享給最多 5 位）
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS patient_shares (
+        patient_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        shared_with_user_id TEXT NOT NULL,
+        shared_with_name TEXT,
+        owner_name TEXT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (patient_id, shared_with_user_id)
+      )`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_shares_user ON patient_shares(shared_with_user_id)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_shares_owner ON patient_shares(owner_user_id)`).run();
     } catch(e) { console.warn('schema init', e?.message); }
   },
   async getUserData(env, userId) {
@@ -329,22 +357,148 @@ const repo = {
     await env.DB.prepare(`INSERT INTO user_data (user_id, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`)
       .bind(userId, dataStr, now).run();
     return now;
+  },
+  // ===== 邀請碼 =====
+  async getActiveInvite(env, patientId, ownerUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    return await env.DB.prepare(`SELECT code, patient_id, owner_user_id, patient_name, created_at FROM share_invites WHERE patient_id = ? AND owner_user_id = ? AND active = 1 LIMIT 1`).bind(patientId, ownerUserId).first();
+  },
+  async createInvite(env, code, patientId, ownerUserId, patientName) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    await env.DB.prepare(`INSERT INTO share_invites (code, patient_id, owner_user_id, patient_name, active, created_at) VALUES (?, ?, ?, ?, 1, ?)`)
+      .bind(code, patientId, ownerUserId, patientName || '', Date.now()).run();
+  },
+  async deactivateInvitesForPatient(env, patientId, ownerUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    await env.DB.prepare(`UPDATE share_invites SET active = 0 WHERE patient_id = ? AND owner_user_id = ? AND active = 1`).bind(patientId, ownerUserId).run();
+  },
+  async lookupInvite(env, code) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    return await env.DB.prepare(`SELECT code, patient_id, owner_user_id, patient_name, created_at FROM share_invites WHERE code = ? AND active = 1 LIMIT 1`).bind(code).first();
+  },
+  async codeExists(env, code) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    const r = await env.DB.prepare(`SELECT code FROM share_invites WHERE code = ? LIMIT 1`).bind(code).first();
+    return !!r;
+  },
+  // ===== 共享關係 =====
+  async addShare(env, patientId, ownerUserId, sharedWithUserId, sharedWithName, ownerName) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    await env.DB.prepare(`INSERT OR IGNORE INTO patient_shares (patient_id, owner_user_id, shared_with_user_id, shared_with_name, owner_name, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(patientId, ownerUserId, sharedWithUserId, sharedWithName || '', ownerName || '', Date.now()).run();
+  },
+  async removeShare(env, patientId, ownerUserId, sharedWithUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    await env.DB.prepare(`DELETE FROM patient_shares WHERE patient_id = ? AND owner_user_id = ? AND shared_with_user_id = ?`)
+      .bind(patientId, ownerUserId, sharedWithUserId).run();
+  },
+  async countSharesForPatient(env, patientId, ownerUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    const row = await env.DB.prepare(`SELECT COUNT(*) AS c FROM patient_shares WHERE patient_id = ? AND owner_user_id = ?`).bind(patientId, ownerUserId).first();
+    return row?.c || 0;
+  },
+  async getSharesByOwner(env, ownerUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    const rows = await env.DB.prepare(`SELECT patient_id, shared_with_user_id, shared_with_name, created_at FROM patient_shares WHERE owner_user_id = ?`).bind(ownerUserId).all();
+    return rows.results || [];
+  },
+  async getSharesToUser(env, sharedWithUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    const rows = await env.DB.prepare(`SELECT patient_id, owner_user_id, owner_name, created_at FROM patient_shares WHERE shared_with_user_id = ?`).bind(sharedWithUserId).all();
+    return rows.results || [];
+  },
+  async getSharesForPatient(env, patientId, ownerUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    const rows = await env.DB.prepare(`SELECT shared_with_user_id, shared_with_name, created_at FROM patient_shares WHERE patient_id = ? AND owner_user_id = ?`).bind(patientId, ownerUserId).all();
+    return rows.results || [];
+  },
+  async findShareToUser(env, patientId, sharedWithUserId) {
+    if (!env.DB) throw new Error('DB_NOT_BOUND');
+    return await env.DB.prepare(`SELECT patient_id, owner_user_id, shared_with_name, owner_name FROM patient_shares WHERE patient_id = ? AND shared_with_user_id = ? LIMIT 1`).bind(patientId, sharedWithUserId).first();
   }
 };
 
+// ==================== 共享相關工具 ====================
+const SHARE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // 32 字元，避開 0/O/1/I 等易混淆
+const SHARE_PATIENT_COLLECTION_KEYS = ['vitals', 'medications', 'consultations', 'careLogs', 'preVisitQuestions', 'aiReminders'];
+const MAX_CAREGIVERS_PER_PATIENT = 5;
+
+async function genUniqueShareCode(env, len = 6) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const buf = new Uint8Array(len);
+    crypto.getRandomValues(buf);
+    let code = '';
+    for (let i = 0; i < len; i++) code += SHARE_ALPHABET[buf[i] % SHARE_ALPHABET.length];
+    if (!(await repo.codeExists(env, code))) return code;
+  }
+  throw new Error('CODE_GEN_FAILED');
+}
+
 // ==================== 雲端資料同步 endpoints ====================
+// 把使用者本人 user_data 與「被分享給他」的 patients 資料合併回傳
 async function getData(req, env, cors) {
   const u = await getUser(req, env);
   if (!u) return safeError(null, cors, 401);
   try {
-    const result = await repo.getUserData(env, u.sub);
-    return json(result || { data: null, updated_at: null }, cors);
+    await repo.ensureSchema(env);
+    const own = await repo.getUserData(env, u.sub);
+    const myData = own?.data || { patients: [], vitals: {}, medications: {}, consultations: {}, careLogs: {}, preVisitQuestions: {}, aiReminders: {} };
+    if (!Array.isArray(myData.patients)) myData.patients = [];
+    for (const k of SHARE_PATIENT_COLLECTION_KEYS) {
+      if (!myData[k] || typeof myData[k] !== 'object') myData[k] = {};
+    }
+
+    // 我擁有的患者：標註已被分享給誰
+    const sharesByMe = await repo.getSharesByOwner(env, u.sub);
+    const sharesByPatient = {};
+    for (const s of sharesByMe) {
+      (sharesByPatient[s.patient_id] = sharesByPatient[s.patient_id] || []).push({
+        userId: s.shared_with_user_id,
+        name: s.shared_with_name || ''
+      });
+    }
+    myData.patients = myData.patients.map(p => {
+      const list = sharesByPatient[p.id];
+      return list ? { ...p, _sharedWith: list } : p;
+    });
+
+    // 被分享給我的患者：從 owner 的 user_data 取出該 patient 相關資料注入
+    const sharesToMe = await repo.getSharesToUser(env, u.sub);
+    const ownerCache = {};
+    for (const share of sharesToMe) {
+      let ownerObj = ownerCache[share.owner_user_id];
+      if (!ownerObj) {
+        const r = await repo.getUserData(env, share.owner_user_id);
+        ownerObj = r?.data || {};
+        ownerCache[share.owner_user_id] = ownerObj;
+      }
+      const ownerPatient = (ownerObj.patients || []).find(p => p.id === share.patient_id);
+      if (!ownerPatient) continue; // owner 已刪除這位患者，跳過
+
+      // 避免重複（極少數情況）
+      if (!myData.patients.find(p => p.id === share.patient_id)) {
+        myData.patients.push({
+          ...ownerPatient,
+          _sharedFrom: share.owner_user_id,
+          _ownerName: share.owner_name || ''
+        });
+      }
+      // 注入子集合
+      for (const k of SHARE_PATIENT_COLLECTION_KEYS) {
+        if (ownerObj[k] && ownerObj[k][share.patient_id] !== undefined) {
+          myData[k][share.patient_id] = ownerObj[k][share.patient_id];
+        }
+      }
+    }
+
+    return json({ data: myData, updated_at: own?.updated_at || null }, cors);
   } catch (e) {
     if (e?.message === 'DB_NOT_BOUND') return safeError(e, cors, 503, '雲端服務暫不可用');
     return safeError(e, cors, 500);
   }
 }
 
+// 寫入時：拆解資料 → 自己擁有的寫到自己 user_data；被分享的 patient 寫回 owner 的 user_data
 async function putData(req, env, cors) {
   const u = await getUser(req, env);
   if (!u) return safeError(null, cors, 401);
@@ -352,10 +506,230 @@ async function putData(req, env, cors) {
   try { body = await req.json(); } catch { return safeError(null, cors, 400); }
   if (!body || typeof body !== 'object') return safeError(null, cors, 400);
   try {
-    const updated_at = await repo.saveUserData(env, u.sub, body.data);
+    await repo.ensureSchema(env);
+    const incoming = body.data || {};
+    const sharesToMe = await repo.getSharesToUser(env, u.sub);
+    const sharedPatientToOwner = {};
+    for (const s of sharesToMe) sharedPatientToOwner[s.patient_id] = s.owner_user_id;
+
+    const incomingPatients = Array.isArray(incoming.patients) ? incoming.patients : [];
+
+    // 1) 拆出我自己擁有的部分（過濾掉「被分享」的 patient 與其相關資料）
+    const myData = { ...incoming };
+    myData.patients = incomingPatients
+      .filter(p => !sharedPatientToOwner[p.id])
+      .map(p => {
+        // 移除前端注入的 metadata（避免存進 DB）
+        const { _sharedFrom, _ownerName, _sharedWith, ...rest } = p || {};
+        return rest;
+      });
+    for (const k of SHARE_PATIENT_COLLECTION_KEYS) {
+      const sub = {};
+      const orig = (incoming[k] && typeof incoming[k] === 'object') ? incoming[k] : {};
+      for (const pid of Object.keys(orig)) {
+        if (!sharedPatientToOwner[pid]) sub[pid] = orig[pid];
+      }
+      myData[k] = sub;
+    }
+    const updated_at = await repo.saveUserData(env, u.sub, myData);
+
+    // 2) 把每個「被分享給我的 patient」寫回 owner 的 user_data
+    //    依 owner 分組，每個 owner 讀一次、改一次、存一次
+    const groupByOwner = {};
+    for (const p of incomingPatients) {
+      const ownerId = sharedPatientToOwner[p.id];
+      if (!ownerId) continue;
+      (groupByOwner[ownerId] = groupByOwner[ownerId] || new Set()).add(p.id);
+    }
+    // 子集合 keys 也可能含被分享的 patient（即使 patients[] 沒這筆，例如只更新 vitals）
+    for (const k of SHARE_PATIENT_COLLECTION_KEYS) {
+      const orig = (incoming[k] && typeof incoming[k] === 'object') ? incoming[k] : {};
+      for (const pid of Object.keys(orig)) {
+        const ownerId = sharedPatientToOwner[pid];
+        if (ownerId) (groupByOwner[ownerId] = groupByOwner[ownerId] || new Set()).add(pid);
+      }
+    }
+
+    for (const [ownerId, pidSet] of Object.entries(groupByOwner)) {
+      const r = await repo.getUserData(env, ownerId);
+      const ownerObj = r?.data || {};
+      if (!Array.isArray(ownerObj.patients)) ownerObj.patients = [];
+      for (const k of SHARE_PATIENT_COLLECTION_KEYS) {
+        if (!ownerObj[k] || typeof ownerObj[k] !== 'object') ownerObj[k] = {};
+      }
+      for (const pid of pidSet) {
+        const inP = incomingPatients.find(p => p.id === pid);
+        if (inP) {
+          const { _sharedFrom, _ownerName, _sharedWith, ...clean } = inP;
+          const idx = ownerObj.patients.findIndex(p => p.id === pid);
+          if (idx >= 0) ownerObj.patients[idx] = clean;
+          else ownerObj.patients.push(clean);
+        }
+        for (const k of SHARE_PATIENT_COLLECTION_KEYS) {
+          if (incoming[k] && incoming[k][pid] !== undefined) {
+            ownerObj[k][pid] = incoming[k][pid];
+          }
+        }
+      }
+      await repo.saveUserData(env, ownerId, ownerObj);
+    }
+
     return json({ ok: true, updated_at }, cors);
   } catch (e) {
     if (e?.message === 'DATA_TOO_LARGE') return safeError(e, cors, 413);
+    if (e?.message === 'DB_NOT_BOUND') return safeError(e, cors, 503, '雲端服務暫不可用');
+    return safeError(e, cors, 500);
+  }
+}
+
+// ==================== 共享 API（邀請碼、加入、列表、移除）====================
+async function shareInviteCreate(req, env, cors) {
+  const u = await getUser(req, env);
+  if (!u) return safeError(null, cors, 401);
+  let body;
+  try { body = await req.json(); } catch { return safeError(null, cors, 400); }
+  const patientId = body?.patientId;
+  if (!patientId || typeof patientId !== 'string') return safeError(null, cors, 400, 'patientId 必填');
+  try {
+    await repo.ensureSchema(env);
+    const own = await repo.getUserData(env, u.sub);
+    const owns = (own?.data?.patients || []).find(p => p.id === patientId);
+    if (!owns) return safeError(null, cors, 403, '不是你建立的被照顧者');
+
+    const existing = await repo.getActiveInvite(env, patientId, u.sub);
+    if (existing) {
+      return json({ code: existing.code, patient_id: patientId, patient_name: existing.patient_name || owns.name || '', reused: true, max_caregivers: MAX_CAREGIVERS_PER_PATIENT }, cors);
+    }
+    const code = await genUniqueShareCode(env);
+    await repo.createInvite(env, code, patientId, u.sub, owns.name || '');
+    return json({ code, patient_id: patientId, patient_name: owns.name || '', reused: false, max_caregivers: MAX_CAREGIVERS_PER_PATIENT }, cors);
+  } catch (e) {
+    if (e?.message === 'DB_NOT_BOUND') return safeError(e, cors, 503, '雲端服務暫不可用');
+    return safeError(e, cors, 500);
+  }
+}
+
+async function shareInviteRegenerate(req, env, cors) {
+  const u = await getUser(req, env);
+  if (!u) return safeError(null, cors, 401);
+  let body;
+  try { body = await req.json(); } catch { return safeError(null, cors, 400); }
+  const patientId = body?.patientId;
+  if (!patientId) return safeError(null, cors, 400);
+  try {
+    await repo.ensureSchema(env);
+    const own = await repo.getUserData(env, u.sub);
+    const owns = (own?.data?.patients || []).find(p => p.id === patientId);
+    if (!owns) return safeError(null, cors, 403);
+
+    await repo.deactivateInvitesForPatient(env, patientId, u.sub);
+    const code = await genUniqueShareCode(env);
+    await repo.createInvite(env, code, patientId, u.sub, owns.name || '');
+    return json({ code, patient_id: patientId, patient_name: owns.name || '' }, cors);
+  } catch (e) {
+    if (e?.message === 'DB_NOT_BOUND') return safeError(e, cors, 503, '雲端服務暫不可用');
+    return safeError(e, cors, 500);
+  }
+}
+
+async function shareRedeem(req, env, cors) {
+  const u = await getUser(req, env);
+  if (!u) return safeError(null, cors, 401);
+  let body;
+  try { body = await req.json(); } catch { return safeError(null, cors, 400); }
+  let code = (body?.code || '').toString().trim().toUpperCase();
+  // 過濾非預期字元（只留 alphabet）
+  code = code.split('').filter(c => SHARE_ALPHABET.includes(c)).join('');
+  if (!code || code.length < 4) return safeError(null, cors, 400, '邀請碼格式錯誤');
+  const myName = (body?.myName || u.name || '').toString().slice(0, 50);
+  try {
+    await repo.ensureSchema(env);
+    const inv = await repo.lookupInvite(env, code);
+    if (!inv) return safeError(null, cors, 404, '邀請碼無效或已被廢除');
+    if (inv.owner_user_id === u.sub) return safeError(null, cors, 400, '不能加入自己建立的被照顧者');
+
+    // 已存在共享關係 → 視為成功（idempotent）
+    const existing = await repo.findShareToUser(env, inv.patient_id, u.sub);
+    if (existing) {
+      return json({ ok: true, patient_id: inv.patient_id, patient_name: inv.patient_name || '', already: true }, cors);
+    }
+
+    // 確認上限
+    const count = await repo.countSharesForPatient(env, inv.patient_id, inv.owner_user_id);
+    if (count >= MAX_CAREGIVERS_PER_PATIENT) {
+      return safeError(null, cors, 409, `這位被照顧者已達 ${MAX_CAREGIVERS_PER_PATIENT} 位照顧者上限`);
+    }
+
+    // 取得 owner 名字（從 owner user_data 找不到，先放空字串）
+    let ownerName = '';
+    try {
+      const ownerData = await repo.getUserData(env, inv.owner_user_id);
+      // user_data JSON 裡通常沒有 owner 顯示名稱，這裡保留空字串，前端用 _ownerName 顯示給被分享者看
+    } catch {}
+    await repo.addShare(env, inv.patient_id, inv.owner_user_id, u.sub, myName, ownerName);
+
+    return json({ ok: true, patient_id: inv.patient_id, patient_name: inv.patient_name || '', already: false }, cors);
+  } catch (e) {
+    if (e?.message === 'DB_NOT_BOUND') return safeError(e, cors, 503, '雲端服務暫不可用');
+    return safeError(e, cors, 500);
+  }
+}
+
+async function shareList(req, env, cors) {
+  const u = await getUser(req, env);
+  if (!u) return safeError(null, cors, 401);
+  const url = new URL(req.url);
+  const patientId = url.searchParams.get('patientId');
+  try {
+    await repo.ensureSchema(env);
+    if (patientId) {
+      // 必須是 owner 才能看共享名單與邀請碼
+      const own = await repo.getUserData(env, u.sub);
+      const owns = (own?.data?.patients || []).find(p => p.id === patientId);
+      if (!owns) return safeError(null, cors, 403);
+      const shares = await repo.getSharesForPatient(env, patientId, u.sub);
+      const invite = await repo.getActiveInvite(env, patientId, u.sub);
+      return json({
+        shares,
+        invite_code: invite?.code || null,
+        max_caregivers: MAX_CAREGIVERS_PER_PATIENT,
+        used: shares.length
+      }, cors);
+    }
+    const shared_by_me = await repo.getSharesByOwner(env, u.sub);
+    const shared_to_me = await repo.getSharesToUser(env, u.sub);
+    return json({ shared_by_me, shared_to_me }, cors);
+  } catch (e) {
+    if (e?.message === 'DB_NOT_BOUND') return safeError(e, cors, 503, '雲端服務暫不可用');
+    return safeError(e, cors, 500);
+  }
+}
+
+async function shareRemove(req, env, cors) {
+  const u = await getUser(req, env);
+  if (!u) return safeError(null, cors, 401);
+  let body;
+  try { body = await req.json(); } catch { return safeError(null, cors, 400); }
+  const patientId = body?.patientId;
+  let sharedWithUserId = body?.sharedWithUserId;
+  if (!patientId) return safeError(null, cors, 400);
+  // 沒帶 sharedWithUserId 或是「self」→ 視為被分享者自願退出
+  if (!sharedWithUserId || sharedWithUserId === 'self') sharedWithUserId = u.sub;
+  try {
+    await repo.ensureSchema(env);
+    if (sharedWithUserId === u.sub) {
+      const target = await repo.findShareToUser(env, patientId, u.sub);
+      if (!target) return safeError(null, cors, 404);
+      await repo.removeShare(env, patientId, target.owner_user_id, u.sub);
+      return json({ ok: true }, cors);
+    }
+    // 主照顧者移除某位被分享者
+    const own = await repo.getUserData(env, u.sub);
+    const owns = (own?.data?.patients || []).find(p => p.id === patientId);
+    if (!owns) return safeError(null, cors, 403);
+    await repo.removeShare(env, patientId, u.sub, sharedWithUserId);
+    return json({ ok: true }, cors);
+  } catch (e) {
     if (e?.message === 'DB_NOT_BOUND') return safeError(e, cors, 503, '雲端服務暫不可用');
     return safeError(e, cors, 500);
   }
