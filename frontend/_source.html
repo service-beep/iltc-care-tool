@@ -145,6 +145,28 @@ const DICT = {
   conditions: { zh: '慢性病 / 目前疾病', en: 'Conditions', id: 'Kondisi', vi: 'Bệnh mãn tính' },
   allergies: { zh: '過敏藥物 / 食物', en: 'Allergies', id: 'Alergi', vi: 'Dị ứng' },
   medicalHistory: { zh: '重要病史', en: 'Medical History', id: 'Riwayat Medis', vi: 'Tiền sử bệnh' },
+  // Sharing (多照顧者共享)
+  inviteCaregivers: { zh: '邀請其他照顧者', en: 'Invite Co-caregivers', id: 'Undang Pengasuh Lain', vi: 'Mời người chăm sóc khác' },
+  redeemCode: { zh: '輸入邀請碼加入照顧', en: 'Enter Invite Code', id: 'Masukkan Kode Undangan', vi: 'Nhập mã mời' },
+  inviteCode: { zh: '邀請碼', en: 'Invite Code', id: 'Kode Undangan', vi: 'Mã mời' },
+  copyCode: { zh: '複製邀請碼', en: 'Copy Code', id: 'Salin Kode', vi: 'Sao chép mã' },
+  copied: { zh: '已複製！', en: 'Copied!', id: 'Disalin!', vi: 'Đã sao chép!' },
+  shareWithLine: { zh: '用 LINE 傳給家人', en: 'Send via LINE', id: 'Kirim via LINE', vi: 'Gửi qua LINE' },
+  regenerateCode: { zh: '重新產生邀請碼', en: 'Regenerate Code', id: 'Buat Kode Baru', vi: 'Tạo mã mới' },
+  regenerateConfirm: { zh: '舊的邀請碼會立即失效（已加入的人不受影響）。確定要重新產生嗎？', en: 'Old code will be invalidated immediately. Already joined users are not affected. Continue?', id: 'Kode lama akan langsung tidak berlaku. Pengasuh yang sudah bergabung tidak terpengaruh. Lanjutkan?', vi: 'Mã cũ sẽ bị vô hiệu ngay. Những người đã tham gia không bị ảnh hưởng. Tiếp tục?' },
+  caregiversList: { zh: '已加入的照顧者', en: 'Joined Caregivers', id: 'Pengasuh Bergabung', vi: 'Người chăm sóc đã tham gia' },
+  noCaregivers: { zh: '尚未有其他照顧者加入', en: 'No co-caregivers yet', id: 'Belum ada pengasuh lain', vi: 'Chưa có người nào tham gia' },
+  removeCaregiver: { zh: '移除', en: 'Remove', id: 'Hapus', vi: 'Xóa' },
+  removeCaregiverConfirm: { zh: '移除後此人將無法再看到本被照顧者的任何資料。確定？', en: 'After removal, this person will lose all access. Continue?', id: 'Setelah dihapus, orang ini akan kehilangan semua akses. Lanjutkan?', vi: 'Sau khi xóa, người này sẽ mất quyền truy cập. Tiếp tục?' },
+  caregiverLimit: { zh: '每位被照顧者最多 5 位照顧者', en: 'Up to 5 caregivers per person', id: 'Maks 5 pengasuh per orang', vi: 'Tối đa 5 người chăm sóc' },
+  enterCodeHint: { zh: '請貼上或輸入 6 位邀請碼', en: 'Paste or type the 6-character code', id: 'Tempel atau ketik kode 6-karakter', vi: 'Dán hoặc nhập mã 6 ký tự' },
+  joinSuccess: { zh: '加入成功！可在被照顧者列表看到資料', en: 'Joined! You can now see this person in your list', id: 'Berhasil bergabung!', vi: 'Tham gia thành công!' },
+  joinAlready: { zh: '你已加入過此被照顧者', en: 'Already joined', id: 'Sudah bergabung', vi: 'Đã tham gia' },
+  ownerLabel: { zh: '主照顧者', en: 'Main Caregiver', id: 'Pengasuh Utama', vi: 'Người chăm sóc chính' },
+  sharedFromLabel: { zh: '由 {name} 分享', en: 'Shared by {name}', id: 'Dibagikan oleh {name}', vi: 'Chia sẻ bởi {name}' },
+  sharedWithCount: { zh: '共 {n} 位照顧者', en: '{n} caregivers', id: '{n} pengasuh', vi: '{n} người chăm sóc' },
+  leaveSharedPatient: { zh: '退出此被照顧者', en: 'Leave this person', id: 'Keluar dari orang ini', vi: 'Rời khỏi' },
+  leaveConfirm: { zh: '退出後將無法再看到此人的資料（你的紀錄保留在主照顧者的雲端）。確定？', en: 'After leaving, you will lose access. Your records remain with the main caregiver. Continue?', id: 'Setelah keluar, Anda akan kehilangan akses. Lanjutkan?', vi: 'Sau khi rời, bạn mất quyền truy cập. Tiếp tục?' },
   // Dashboard
   welcomeCreated: { zh: '已建立', en: 'Created', id: 'Dibuat', vi: 'Đã tạo' },
   alertsTitle: { zh: '健康提醒', en: 'Health Alerts', id: 'Peringatan Kesehatan', vi: 'Cảnh báo sức khỏe' },
@@ -697,7 +719,7 @@ function Landing({ onLogin, lang, setLang }) {
         </div>
         <div className="text-center mt-12 text-xs text-slate-500">
           Powered by iltc / 愛長照 · Not a substitute for medical diagnosis
-          <div className="mt-2 text-[10px] text-slate-400">v3.3 build 20260502 {USE_BACKEND ? '· 平台模式' : '· 個人模式'}</div>
+          <div className="mt-2 text-[10px] text-slate-400">v3.4 build 20260509 · 多照顧者共享 {USE_BACKEND ? '· 平台模式' : '· 個人模式'}</div>
         </div>
       </div>
       {showLogin && <LoginModal onClose={() => setShowLogin(false)} onLogin={onLogin} lang={lang} />}
@@ -792,7 +814,10 @@ function LoginModal({ onClose, onLogin, lang }) {
 function PatientEditor({ patient, onClose, lang }) {
   const { dispatch } = useContext(AppCtx);
   const isNew = !patient.id;
+  const isShared = !!patient._sharedFrom; // 被分享給我的，不能刪只能退出
+  const isOwned = !isNew && !isShared;
   const [form, setForm] = useState({ name: '', birthDate: '', gender: '', bloodType: '', weight: '', height: '', allergies: '', conditions: '', medicalHistory: '', ...patient });
+  const [showInvite, setShowInvite] = useState(false);
   const up = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const submit = (e) => {
     e.preventDefault();
@@ -801,6 +826,15 @@ function PatientEditor({ patient, onClose, lang }) {
     onClose();
   };
   const remove = () => { if (confirm('Delete?')) { dispatch({ type: 'DELETE_PATIENT', payload: form.id }); onClose(); } };
+  const leaveShared = async () => {
+    if (!confirm(t('leaveConfirm', lang))) return;
+    try {
+      await apiFetch('/api/share/remove', { method: 'DELETE', body: JSON.stringify({ patientId: form.id, sharedWithUserId: 'self' }) });
+      // 'self' 是給後端辨識「就是我自己」的快捷值，後端會用 u.sub 替換
+      dispatch({ type: 'DELETE_PATIENT', payload: form.id });
+      onClose();
+    } catch (e) { alert((e.message || e) + ''); }
+  };
   const commonConditions = ['高血壓', '糖尿病', '高血脂', '心律不整', '失智', '中風後', '慢性腎病', '氣喘', '關節炎', '骨質疏鬆'];
   const commonAllergies = ['青黴素', '磺胺類', '海鮮', '花生', '阿斯匹靈', '顯影劑', '堅果', '乳製品'];
   return (
@@ -823,12 +857,202 @@ function PatientEditor({ patient, onClose, lang }) {
           <VoiceInput value={form.allergies} onChange={v => up('allergies', v)} />
         </div>
         <div><Label>{t('medicalHistory', lang)}</Label><VoiceTextArea rows={3} value={form.medicalHistory} onChange={v => up('medicalHistory', v)} /></div>
+
+        {isShared && (
+          <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-xs text-purple-900">
+            {t('sharedFromLabel', lang).replace('{name}', form._ownerName || t('ownerLabel', lang))}
+            ・ {t('caregiverLimit', lang)}
+          </div>
+        )}
+
+        {isOwned && (
+          <div className="bg-cyan-50 border border-cyan-200 rounded-lg p-3 flex items-center justify-between">
+            <div className="text-xs text-cyan-900">
+              {form._sharedWith && form._sharedWith.length > 0
+                ? t('sharedWithCount', lang).replace('{n}', String(form._sharedWith.length + 1))
+                : t('caregiverLimit', lang)}
+            </div>
+            <Btn variant="secondary" onClick={() => setShowInvite(true)}>{t('inviteCaregivers', lang)}</Btn>
+          </div>
+        )}
+
         <div className="flex gap-2 pt-3">
           <Btn type="submit" className="flex-1">{isNew ? t('create', lang) : t('save', lang)}</Btn>
-          {!isNew && <Btn variant="danger" onClick={remove}>{t('delete', lang)}</Btn>}
+          {isOwned && <Btn variant="danger" onClick={remove}>{t('delete', lang)}</Btn>}
+          {isShared && <Btn variant="danger" onClick={leaveShared}>{t('leaveSharedPatient', lang)}</Btn>}
           <Btn variant="secondary" onClick={onClose}>{t('cancel', lang)}</Btn>
         </div>
       </form>
+      {showInvite && <InviteShareModal patient={patient} lang={lang} onClose={() => setShowInvite(false)} />}
+    </Modal>
+  );
+}
+
+// ===== 邀請其他照顧者 Modal =====
+function InviteShareModal({ patient, lang, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [code, setCode] = useState('');
+  const [shares, setShares] = useState([]);
+  const [used, setUsed] = useState(0);
+  const [maxN, setMaxN] = useState(5);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      // 先確保有 invite_code（沒有就建一個）
+      const r1 = await apiFetch('/api/share/invite/create', { method: 'POST', body: JSON.stringify({ patientId: patient.id }) });
+      if (!r1.ok) throw new Error(await readError(r1));
+      const d1 = await r1.json();
+      setCode(d1.code);
+      // 再撈共享名單
+      const r2 = await apiFetch('/api/share/list?patientId=' + encodeURIComponent(patient.id));
+      if (!r2.ok) throw new Error(await readError(r2));
+      const d2 = await r2.json();
+      setShares(d2.shares || []);
+      setUsed(d2.used || 0);
+      setMaxN(d2.max_caregivers || 5);
+    } catch (e) {
+      setError((e.message || e) + '');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const regenerate = async () => {
+    if (!confirm(t('regenerateConfirm', lang))) return;
+    setLoading(true);
+    try {
+      const r = await apiFetch('/api/share/invite/regenerate', { method: 'POST', body: JSON.stringify({ patientId: patient.id }) });
+      if (!r.ok) throw new Error(await readError(r));
+      const d = await r.json();
+      setCode(d.code);
+    } catch (e) { alert((e.message || e) + ''); }
+    finally { setLoading(false); }
+  };
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      alert(code);
+    }
+  };
+
+  const shareViaLine = () => {
+    const text = `我邀請你一起照顧「${patient.name}」\n\n請打開醫囑管理工具 → 點頭像旁的「+ 輸入邀請碼」\n邀請碼：${code}\n\n（一個邀請碼最多 ${maxN} 位照顧者，目前 ${used + 1}/${maxN} 位）`;
+    const url = 'https://line.me/R/msg/text/?' + encodeURIComponent(text);
+    window.open(url, '_blank');
+  };
+
+  const removeOne = async (sw) => {
+    if (!confirm(t('removeCaregiverConfirm', lang))) return;
+    try {
+      const r = await apiFetch('/api/share/remove', { method: 'DELETE', body: JSON.stringify({ patientId: patient.id, sharedWithUserId: sw.shared_with_user_id }) });
+      if (!r.ok) throw new Error(await readError(r));
+      load();
+    } catch (e) { alert((e.message || e) + ''); }
+  };
+
+  return (
+    <Modal open={true} onClose={onClose} title={t('inviteCaregivers', lang)} maxWidth="max-w-lg">
+      <div className="space-y-4 text-sm">
+        {loading ? (
+          <div className="text-center py-8 text-slate-400">載入中…</div>
+        ) : error ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-xs">{error}</div>
+        ) : (
+          <>
+            <div>
+              <div className="text-xs text-slate-500 mb-1">{t('inviteCode', lang)}</div>
+              <div className="bg-gradient-to-br from-cyan-50 to-blue-50 border border-cyan-200 rounded-xl p-4 text-center">
+                <div className="text-3xl font-bold tracking-[0.3em] text-cyan-700 select-all">{code}</div>
+                <div className="text-xs text-slate-500 mt-2">{t('caregiverLimit', lang)}（{used + 1}/{maxN}）</div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                <Btn variant="secondary" onClick={copyCode}>{copied ? t('copied', lang) : t('copyCode', lang)}</Btn>
+                <Btn variant="line" onClick={shareViaLine}>{t('shareWithLine', lang)}</Btn>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-200 pt-3">
+              <div className="text-xs text-slate-500 mb-2">{t('caregiversList', lang)}</div>
+              {shares.length === 0 ? (
+                <div className="text-xs text-slate-400 py-3 text-center">{t('noCaregivers', lang)}</div>
+              ) : (
+                <div className="space-y-2">
+                  {shares.map(s => (
+                    <div key={s.shared_with_user_id} className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg p-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{s.shared_with_name || '（未設定暱稱）'}</div>
+                        <div className="text-xs text-slate-400">加入於 {fmtDate(new Date(s.created_at).toISOString())}</div>
+                      </div>
+                      <button onClick={() => removeOne(s)} className="text-xs text-red-500 hover:text-red-700 px-2 py-1">{t('removeCaregiver', lang)}</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-slate-200 pt-3">
+              <button onClick={regenerate} className="text-xs text-slate-500 hover:text-slate-700 underline">{t('regenerateCode', lang)}</button>
+            </div>
+          </>
+        )}
+        <div className="flex gap-2 pt-2">
+          <Btn variant="secondary" onClick={onClose} className="flex-1">OK</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ===== 輸入邀請碼加入 Modal =====
+function RedeemCodeModal({ profile, lang, onClose, onJoined }) {
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState('');
+  const submit = async () => {
+    const c = (code || '').trim().toUpperCase();
+    if (!c || c.length < 4) return setMsg('請輸入完整的邀請碼');
+    setLoading(true);
+    setMsg('');
+    try {
+      const r = await apiFetch('/api/share/redeem', { method: 'POST', body: JSON.stringify({ code: c, myName: profile?.name || '' }) });
+      if (!r.ok) {
+        const e = await readError(r);
+        setMsg(e || '加入失敗');
+        return;
+      }
+      const d = await r.json();
+      setMsg((d.already ? t('joinAlready', lang) : t('joinSuccess', lang)) + (d.patient_name ? '：' + d.patient_name : ''));
+      setTimeout(() => { onJoined && onJoined(); onClose(); }, 1500);
+    } catch (e) { setMsg((e.message || e) + ''); }
+    finally { setLoading(false); }
+  };
+  return (
+    <Modal open={true} onClose={onClose} title={t('redeemCode', lang)} maxWidth="max-w-md">
+      <div className="space-y-3">
+        <div className="text-xs text-slate-500">{t('enterCodeHint', lang)}</div>
+        <input
+          autoFocus
+          maxLength={8}
+          value={code}
+          onChange={e => setCode(e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, ''))}
+          placeholder="ABC123"
+          className="w-full text-center text-2xl tracking-[0.4em] font-mono py-3 border-2 border-cyan-300 rounded-xl focus:border-cyan-500 focus:outline-none"
+        />
+        {msg && <div className="text-sm text-center" style={{ color: msg.includes('成功') || msg.includes('已加入') ? '#0d9488' : '#dc2626' }}>{msg}</div>}
+        <div className="flex gap-2">
+          <Btn variant="secondary" onClick={onClose} className="flex-1">{t('cancel', lang)}</Btn>
+          <Btn onClick={submit} disabled={loading} className="flex-1">{loading ? '...' : t('redeemCode', lang)}</Btn>
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -1349,8 +1573,81 @@ function shareToLine(text) {
 }
 
 function ConsultationView({ item, onClose, onEdit, lang }) {
-  const { dispatch } = useContext(AppCtx);
-  const buildShareText = () => [`【${item.hospital} ${item.department} ${t('consult', lang)}】`, `${t('date', lang)}: ${fmtDate(item.date)}`, item.doctor && `${t('doctor', lang)}: ${item.doctor}`, item.chiefComplaint && `${t('chiefComplaint', lang)}: ${item.chiefComplaint}`, item.diagnosis && `${t('diagnosis', lang)}: ${item.diagnosis}`, item.plan && `${t('plan', lang)}: ${item.plan}`, item.aiSummary && `\n--- AI ${t('aiSummary', lang)} ---\n${item.aiSummary}`, item.nextVisit && `\n${t('nextVisit', lang)}: ${fmtDate(item.nextVisit)}`].filter(Boolean).join('\n');
+  const { state, dispatch } = useContext(AppCtx);
+  const [sharing, setSharing] = useState(false);
+
+  // 後備格式（AI 失敗時使用）
+  const buildPlainShareText = () => {
+    const lines = [];
+    lines.push(`[${item.hospital || ''} ${item.department || ''} 看診紀錄]`);
+    lines.push(`日期：${fmtDate(item.date)}`);
+    if (item.doctor) lines.push(`醫師：${item.doctor}`);
+    lines.push('');
+    if (item.chiefComplaint) { lines.push('【主訴】'); lines.push(item.chiefComplaint); lines.push(''); }
+    if (item.diagnosis) { lines.push('【診斷】'); lines.push(item.diagnosis); lines.push(''); }
+    if (item.plan) { lines.push('【醫師處方／醫囑】'); lines.push(item.plan); lines.push(''); }
+    if (item.aiSummary) { lines.push('【AI 醫囑摘要】'); lines.push(item.aiSummary); lines.push(''); }
+    if (item.nextVisit) { lines.push(`【下次回診】 ${fmtDate(item.nextVisit)}`); }
+    lines.push('');
+    lines.push('—— 來自醫囑管理工具');
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  };
+
+  // AI 整理為「家屬版」分享內容
+  const buildAIShareText = async () => {
+    const patient = state.patients.find(p => p.id === state.currentPatientId);
+    const sys = `你是長照家庭照顧者的助理。請把醫師看診紀錄整理成「給家屬群組看的清楚摘要」。
+
+要求：
+1. 使用繁體中文，語氣自然像家人在說明，不要醫學術語化。
+2. 嚴格依照下方欄位排版，每段以【】開頭：
+   【看診資訊】醫院、科別、日期、醫師
+   【病況說明】用 2-4 句白話講今天醫師說的狀況
+   【醫師處方】條列今天開的藥或處置（若無就寫「無新增」）
+   【家屬注意事項】條列 3-5 條家屬日常要留意的事，要具體可執行
+   【下次回診】時間 + 地點（如沒安排就寫「未安排」）
+3. 不要加表情符號或裝飾線條。
+4. 不要編造資料；醫囑沒寫的不要自己腦補。
+5. 結尾加一行「—— 來自醫囑管理工具」`;
+
+    const userMsg = `病人：${patient?.name || '（未填）'}
+已知疾病：${patient?.conditions || '無'}
+過敏：${patient?.allergies || '無'}
+
+看診資料：
+- 日期：${fmtDate(item.date)}
+- 醫院：${item.hospital || '（未填）'}
+- 科別：${item.department || '（未填）'}
+- 醫師：${item.doctor || '（未填）'}
+- 主訴：${item.chiefComplaint || '無'}
+- 診斷：${item.diagnosis || '無'}
+- 醫囑/處方：${item.plan || '無'}
+- AI 摘要（如有）：${item.aiSummary || '無'}
+- 醫囑錄音逐字稿（如有）：${item.transcription || '無'}
+- 下次回診：${item.nextVisit ? fmtDate(item.nextVisit) : '未安排'}
+- 備註：${item.notes || '無'}
+
+請按上面要求整理。`;
+
+    const text = await callAI(state.settings, sys, userMsg);
+    return text.trim();
+  };
+
+  // 一鍵分享：先 AI 整理 → 直接打開 LINE
+  const handleShare = async () => {
+    if (sharing) return;
+    setSharing(true);
+    try {
+      const aiText = await buildAIShareText();
+      shareToLine(aiText || buildPlainShareText());
+    } catch (err) {
+      console.error('AI share failed, fallback to plain', err);
+      shareToLine(buildPlainShareText());
+    } finally {
+      setSharing(false);
+    }
+  };
+
   const remove = () => { if (confirm('Delete?')) { dispatch({ type: 'DELETE_CONSULTATION', payload: item.id }); onClose(); } };
   const Field = ({ label, value }) => <div><div className="text-xs text-slate-500 mb-0.5">{label}</div><div className="text-slate-800 whitespace-pre-wrap">{value}</div></div>;
   return (
@@ -1365,10 +1662,11 @@ function ConsultationView({ item, onClose, onEdit, lang }) {
         {item.nextVisit && <Field label={t('nextVisit', lang)} value={fmtDate(item.nextVisit)} />}
         {item.notes && <Field label={t('note', lang)} value={item.notes} />}
         <div className="flex gap-2 pt-3 border-t border-slate-100">
-          <Btn variant="line" onClick={() => shareToLine(buildShareText())} className="flex-1">{t('shareLine', lang)}</Btn>
+          <Btn variant="line" onClick={handleShare} disabled={sharing} className="flex-1">{sharing ? 'AI 整理中…' : t('shareLine', lang)}</Btn>
           <Btn variant="secondary" onClick={onEdit}>{t('edit', lang)}</Btn>
           <Btn variant="danger" onClick={remove}>{t('delete', lang)}</Btn>
         </div>
+        <div className="text-xs text-slate-400 -mt-2">點分享後，AI 會把醫師說的話整理成易讀的家屬版本，再打開 LINE 選擇要傳給誰。</div>
       </div>
     </Modal>
   );
@@ -1964,25 +2262,26 @@ function MainApp({ profile, onLogout, lang, onLangChange }) {
   // 寫入 localStorage（無論如何都存本地作為快取）
   useEffect(() => { saveState(profile.id, state); }, [state]);
 
-  // 進入時：從雲端拉資料覆蓋本地
-  useEffect(() => {
+  // 從雲端拉資料覆蓋本地（首次載入 / 加入新共享後重抓）
+  const reloadFromCloud = async (silent) => {
     if (!USE_BACKEND) { firstLoadRef.current = false; return; }
-    setSyncStatus('loading');
-    apiFetch('/api/data')
-      .then(r => r.json())
-      .then(d => {
-        if (d.data && d.data.patients) {
-          // 雲端有資料 → 覆蓋本地
-          dispatch({ type: 'SET_STATE', payload: d.data });
-          setSyncStatus('synced');
-        } else {
-          // 雲端沒資料 → 把本地資料推上雲端
-          setSyncStatus('synced');
-        }
-      })
-      .catch(e => { setSyncStatus('error'); setSyncError(e.message || String(e)); })
-      .finally(() => { setTimeout(() => { firstLoadRef.current = false; }, 500); });
-  }, []);
+    if (!silent) setSyncStatus('loading');
+    try {
+      const r = await apiFetch('/api/data');
+      const d = await r.json();
+      if (d.data && d.data.patients) {
+        firstLoadRef.current = true;
+        dispatch({ type: 'SET_STATE', payload: d.data });
+      }
+      setSyncStatus('synced');
+    } catch (e) {
+      setSyncStatus('error');
+      setSyncError(e.message || String(e));
+    } finally {
+      setTimeout(() => { firstLoadRef.current = false; }, 500);
+    }
+  };
+  useEffect(() => { reloadFromCloud(); }, []);
 
   // 有變動時：debounce 3 秒後推到雲端
   useEffect(() => {
@@ -2006,6 +2305,7 @@ function MainApp({ profile, onLogout, lang, onLangChange }) {
   useEffect(() => { if (state.settings.lang && state.settings.lang !== lang) onLangChange(state.settings.lang); }, []);
   const [tab, setTab] = useState('dashboard');
   const [showPatientEditor, setShowPatientEditor] = useState(false);
+  const [showRedeemFromEmpty, setShowRedeemFromEmpty] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const hasPatient = !!state.currentPatientId;
@@ -2024,7 +2324,7 @@ function MainApp({ profile, onLogout, lang, onLangChange }) {
             <div className="flex items-center gap-2">
               <SyncIndicator status={syncStatus} error={syncError} />
               <LangSwitcher value={lang} onChange={(v) => { onLangChange(v); dispatch({ type: 'UPDATE_SETTINGS', payload: { lang: v } }); }} compact />
-              <PatientSwitcher lang={lang} />
+              <PatientSwitcher lang={lang} profile={profile} onReload={reloadFromCloud} />
               <div className="relative">
                 <button onClick={() => setShowMenu(!showMenu)} className="flex items-center justify-center w-9 h-9 rounded-full bg-cyan-100 hover:bg-cyan-200 overflow-hidden" title={profile.name}>
                   {profile.pic ? <img src={profile.pic} alt="" className="w-full h-full object-cover" /> : <span className="text-cyan-700 font-semibold text-sm">{profile.name?.[0] || '?'}</span>}
@@ -2053,7 +2353,10 @@ function MainApp({ profile, onLogout, lang, onLangChange }) {
               <div className="bg-white/80 backdrop-blur rounded-2xl p-8 border border-slate-200 max-w-md mx-auto">
                 <h2 className="text-xl font-bold text-slate-900 mb-2">歡迎，{profile.name}</h2>
                 <p className="text-sm text-slate-600 mb-6">開始建立你要照顧的對象，即可記錄數值、用藥、看診等資訊。</p>
-                <Btn onClick={() => setShowPatientEditor(true)} className="w-full">＋ 新增被照顧者</Btn>
+                <div className="space-y-2">
+                  <Btn onClick={() => setShowPatientEditor(true)} className="w-full">＋ 新增被照顧者</Btn>
+                  <button onClick={() => setShowRedeemFromEmpty(true)} className="w-full text-sm text-cyan-600 hover:text-cyan-800 underline">{t('redeemCode', lang)}</button>
+                </div>
               </div>
             </div>
           ) : (
@@ -2077,39 +2380,57 @@ function MainApp({ profile, onLogout, lang, onLangChange }) {
           </nav>
         )}
         {showPatientEditor && <PatientEditor patient={{}} onClose={() => setShowPatientEditor(false)} lang={lang} />}
+        {showRedeemFromEmpty && <RedeemCodeModal profile={profile} lang={lang} onClose={() => setShowRedeemFromEmpty(false)} onJoined={() => reloadFromCloud()} />}
       </div>
     </AppCtx.Provider>
   );
 }
 
-function PatientSwitcher({ lang }) {
+function PatientSwitcher({ lang, profile, onReload }) {
   const { state, dispatch } = useContext(AppCtx);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [showRedeem, setShowRedeem] = useState(false);
   const current = state.patients.find(p => p.id === state.currentPatientId);
   if (!current) return null;
+  const isCurrentShared = !!current._sharedFrom;
   return (
     <>
       <button onClick={() => setOpen(true)} className="flex items-center gap-2 bg-slate-100 rounded-lg px-3 py-1.5 hover:bg-slate-200">
-        <div className="w-7 h-7 rounded-full bg-cyan-500 text-white flex items-center justify-center font-semibold text-sm">{current.name[0]}</div>
+        <div className={'w-7 h-7 rounded-full text-white flex items-center justify-center font-semibold text-sm ' + (isCurrentShared ? 'bg-purple-500' : 'bg-cyan-500')}>{current.name[0]}</div>
         <div className="text-sm font-medium">{current.name}</div>
         <span className="text-slate-400 text-xs">▼</span>
       </button>
       <Modal open={open} onClose={() => setOpen(false)} title={t('addPatient', lang)}>
         <div className="space-y-2 mb-4">
-          {state.patients.map(p => (
-            <div key={p.id} className={'flex items-center gap-2 p-3 rounded-lg border ' + (p.id === state.currentPatientId ? 'border-cyan-500 bg-cyan-50' : 'border-slate-200')}>
-              <button onClick={() => { dispatch({ type: 'SET_CURRENT_PATIENT', payload: p.id }); setOpen(false); }} className="flex items-center gap-3 flex-1 text-left">
-                <div className="w-10 h-10 rounded-full bg-cyan-100 text-cyan-700 flex items-center justify-center font-semibold">{p.name[0]}</div>
-                <div><div className="font-medium">{p.name}</div><div className="text-xs text-slate-500">{p.conditions?.slice(0,30)}</div></div>
-              </button>
-              <button onClick={() => { setEditing(p); setOpen(false); }} className="text-slate-500 text-sm px-2">{t('edit', lang)}</button>
-            </div>
-          ))}
+          {state.patients.map(p => {
+            const shared = !!p._sharedFrom;
+            const sharedCount = (p._sharedWith || []).length;
+            return (
+              <div key={p.id} className={'flex items-center gap-2 p-3 rounded-lg border ' + (p.id === state.currentPatientId ? (shared ? 'border-purple-400 bg-purple-50' : 'border-cyan-500 bg-cyan-50') : 'border-slate-200')}>
+                <button onClick={() => { dispatch({ type: 'SET_CURRENT_PATIENT', payload: p.id }); setOpen(false); }} className="flex items-center gap-3 flex-1 text-left">
+                  <div className={'w-10 h-10 rounded-full flex items-center justify-center font-semibold ' + (shared ? 'bg-purple-100 text-purple-700' : 'bg-cyan-100 text-cyan-700')}>{p.name[0]}</div>
+                  <div className="min-w-0">
+                    <div className="font-medium flex items-center gap-2">
+                      <span className="truncate">{p.name}</span>
+                      {shared && <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded shrink-0">{t('sharedFromLabel', lang).replace('{name}', p._ownerName || '')}</span>}
+                      {!shared && sharedCount > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-cyan-100 text-cyan-700 rounded shrink-0">{t('sharedWithCount', lang).replace('{n}', String(sharedCount + 1))}</span>}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">{p.conditions?.slice(0,30)}</div>
+                  </div>
+                </button>
+                <button onClick={() => { setEditing(p); setOpen(false); }} className="text-slate-500 text-sm px-2">{t('edit', lang)}</button>
+              </div>
+            );
+          })}
         </div>
-        <Btn onClick={() => { setEditing({}); setOpen(false); }} className="w-full">{t('addPatient', lang)}</Btn>
+        <div className="grid grid-cols-2 gap-2">
+          <Btn onClick={() => { setEditing({}); setOpen(false); }}>{t('addPatient', lang)}</Btn>
+          <Btn variant="secondary" onClick={() => { setShowRedeem(true); setOpen(false); }}>{t('redeemCode', lang)}</Btn>
+        </div>
       </Modal>
       {editing && <PatientEditor patient={editing} onClose={() => setEditing(null)} lang={lang} />}
+      {showRedeem && <RedeemCodeModal profile={profile} lang={lang} onClose={() => setShowRedeem(false)} onJoined={() => onReload && onReload()} />}
     </>
   );
 }
