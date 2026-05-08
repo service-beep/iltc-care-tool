@@ -1,0 +1,2264 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>醫囑管理工具</title>
+<style>
+  body { font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; -webkit-tap-highlight-color: transparent; margin: 0; background: linear-gradient(135deg, #ecfeff 0%, #f0f9ff 35%, #eff6ff 100%); background-attachment: fixed; min-height: 100vh; position: relative; }
+  body::before, body::after { content:""; position: fixed; border-radius: 50%; filter: blur(80px); pointer-events: none; z-index: 0; }
+  body::before { width: 380px; height: 380px; background: #67e8f9; opacity: 0.22; top: -120px; right: -120px; }
+  body::after { width: 320px; height: 320px; background: #a5f3fc; opacity: 0.18; bottom: -100px; left: -100px; }
+  body > * { position: relative; z-index: 1; }
+  input, select, textarea, button { font-family: inherit; }
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  @keyframes pulse-red { 0%,100% { background-color: rgb(239 68 68); } 50% { background-color: rgb(220 38 38); } }
+  .recording { animation: pulse-red 1.2s ease-in-out infinite; }
+  .tab-active { color: #0891b2; border-color: #0891b2; background: linear-gradient(to bottom, rgba(6,182,212,0.08), transparent); }
+  .card { background: white; border: 1px solid rgb(226 232 240 / 0.8); border-radius: 0.75rem; box-shadow: 0 1px 2px rgb(0 0 0 / 0.03), 0 1px 8px rgb(0 0 0 / 0.02); }
+  .hero-bg { background: linear-gradient(135deg, #ecfeff 0%, #e0f2fe 50%, #f0f9ff 100%); }
+  .hero-blob { position: absolute; border-radius: 50%; filter: blur(60px); opacity: 0.35; pointer-events: none; }
+  @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  .fade-in-up { animation: fadeInUp 0.5s ease-out both; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div id="root"></div>
+<div id="errorBox" style="display:none;position:fixed;top:0;left:0;right:0;background:#fee2e2;color:#991b1b;padding:12px;font-family:monospace;font-size:12px;white-space:pre-wrap;z-index:9999;max-height:50vh;overflow:auto;border-bottom:2px solid #dc2626"></div>
+<script>
+window.addEventListener('error', function(e){
+  var box = document.getElementById('errorBox');
+  if (!box) return;
+  box.style.display='block';
+  box.textContent += (e.message || e) + '\n' + (e.filename||'').split('/').pop() + ':' + (e.lineno||'') + '\n\n';
+});
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo, useReducer, createContext, useContext } = React;
+
+// ========== 後端設定（部署後請填入 Worker URL） ==========
+// 空字串 = 使用者自備 API Key 的純本地模式
+// 填入 URL = 使用平台後端（LINE 登入 + 內建 AI）
+const BACKEND_URL = 'https://billowing-river-dcf6iltc-backend.service-ed8.workers.dev';
+const USE_BACKEND = !!BACKEND_URL;
+
+// Bearer Token 管理（存 localStorage，取代 cookie 避開跨網域問題）
+const TOKEN_KEY = 'iltc_v2_token';
+const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
+const setToken = (t) => { try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); } catch {} };
+
+// 從 URL hash 抓登入後回來的 token
+(function consumeLoginToken() {
+  try {
+    if (location.hash && location.hash.startsWith('#t=')) {
+      const t = decodeURIComponent(location.hash.slice(3));
+      setToken(t);
+      // 清掉網址上的 token
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  } catch {}
+})();
+
+// 統一的 API 呼叫 wrapper：帶 Bearer token
+async function apiFetch(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  const tok = getToken();
+  if (tok) headers['Authorization'] = 'Bearer ' + tok;
+  if (opts.body && !headers['Content-Type'] && typeof opts.body === 'string') headers['Content-Type'] = 'application/json';
+  const res = await fetch(BACKEND_URL + path, { ...opts, headers });
+  return res;
+}
+// 從錯誤 response 取出可讀訊息（後端統一回 {error, request_id}）
+async function readError(res) {
+  try {
+    const j = await res.clone().json();
+    return j.error || ('伺服器錯誤 (' + res.status + ')');
+  } catch {
+    try { return (await res.text()).slice(0, 200); } catch { return '伺服器錯誤'; }
+  }
+}
+
+// ========== 多語系字典（全站適用） ==========
+const LANGS = { zh: { name: '繁體中文', flag: '中' }, en: { name: 'English', flag: 'EN' }, id: { name: 'Bahasa Indonesia', flag: 'ID' }, vi: { name: 'Tiếng Việt', flag: 'VN' } };
+
+const DICT = {
+  // App 基礎
+  appName: { zh: '醫囑管理工具', en: 'Medical Care Assistant', id: 'Asisten Perawatan Medis', vi: 'Trợ lý chăm sóc y tế' },
+  // Tabs
+  dashboard: { zh: '總覽', en: 'Home', id: 'Beranda', vi: 'Tổng quan' },
+  vitals: { zh: '數值', en: 'Vitals', id: 'Vital', vi: 'Chỉ số' },
+  meds: { zh: '用藥', en: 'Meds', id: 'Obat', vi: 'Thuốc' },
+  consult: { zh: '看診', en: 'Visits', id: 'Kunjungan', vi: 'Khám' },
+  care: { zh: '病況', en: 'Status', id: 'Status', vi: 'Tình trạng' },
+  erCard: { zh: '摘要卡', en: 'Summary', id: 'Ringkasan', vi: 'Tóm tắt' },
+  settings: { zh: '設定', en: 'Settings', id: 'Pengaturan', vi: 'Cài đặt' },
+  // Common
+  save: { zh: '儲存', en: 'Save', id: 'Simpan', vi: 'Lưu' },
+  cancel: { zh: '取消', en: 'Cancel', id: 'Batal', vi: 'Hủy' },
+  delete: { zh: '刪除', en: 'Delete', id: 'Hapus', vi: 'Xóa' },
+  edit: { zh: '編輯', en: 'Edit', id: 'Edit', vi: 'Sửa' },
+  add: { zh: '新增', en: 'Add', id: 'Tambah', vi: 'Thêm' },
+  create: { zh: '建立', en: 'Create', id: 'Buat', vi: 'Tạo' },
+  back: { zh: '返回', en: 'Back', id: 'Kembali', vi: 'Quay lại' },
+  confirm: { zh: '確認', en: 'Confirm', id: 'Konfirmasi', vi: 'Xác nhận' },
+  loading: { zh: '載入中', en: 'Loading', id: 'Memuat', vi: 'Đang tải' },
+  share: { zh: '分享', en: 'Share', id: 'Bagikan', vi: 'Chia sẻ' },
+  shareLine: { zh: '分享到 LINE', en: 'Share to LINE', id: 'Bagikan ke LINE', vi: 'Chia sẻ LINE' },
+  notSet: { zh: '未設定', en: 'Not set', id: 'Belum diatur', vi: 'Chưa đặt' },
+  none: { zh: '無', en: 'None', id: 'Tidak ada', vi: 'Không có' },
+  note: { zh: '備註', en: 'Note', id: 'Catatan', vi: 'Ghi chú' },
+  time: { zh: '時間', en: 'Time', id: 'Waktu', vi: 'Thời gian' },
+  date: { zh: '日期', en: 'Date', id: 'Tanggal', vi: 'Ngày' },
+  // Landing
+  heroTitle: { zh: '醫囑、用藥、病況 全家不再資訊斷層', en: 'Never lose track of meds, vitals, or doctor orders again', id: 'Jangan pernah kehilangan jejak obat, vital, atau instruksi dokter', vi: 'Không bao giờ mất dấu thuốc, chỉ số hay lời dặn bác sĩ' },
+  heroDesc: { zh: '陪診錄音自動摘要，血壓血糖自動畫圖，看護簡易打卡，病況交接一目了然。', en: 'AI-summarized visit recordings, auto-charted vitals, easy caregiver check-ins, clear shift handovers.', id: 'Rekaman kunjungan yang diringkas AI, grafik vital otomatis, check-in perawat yang mudah.', vi: 'Tóm tắt AI cho ghi âm khám, biểu đồ chỉ số tự động, điểm danh dễ dàng cho người chăm sóc.' },
+  ctaStart: { zh: '開始使用', en: 'Get Started', id: 'Mulai', vi: 'Bắt đầu' },
+  haveAccount: { zh: '已有帳號 →', en: 'Have an account →', id: 'Sudah punya akun →', vi: 'Đã có tài khoản →' },
+  privacyNote: { zh: '資料僅儲存在你的裝置；不上傳、不追蹤', en: 'Data stored only on your device; nothing uploaded', id: 'Data hanya disimpan di perangkat Anda', vi: 'Dữ liệu chỉ lưu trên thiết bị của bạn' },
+  feat1Title: { zh: '醫囑 AI 摘要', en: 'AI Visit Summary', id: 'Ringkasan Kunjungan AI', vi: 'Tóm tắt khám AI' },
+  feat1Desc: { zh: '陪診錄音，AI 自動整理成白話摘要，一鍵分享給家人', en: 'Record the visit, AI writes a plain-language summary, share to family in one tap', id: 'Rekam kunjungan, AI menulis ringkasan sederhana, bagikan ke keluarga dengan satu ketukan', vi: 'Ghi âm buổi khám, AI viết tóm tắt dễ hiểu, chia sẻ cho gia đình chỉ một chạm' },
+  feat2Title: { zh: '健康數值追蹤', en: 'Vital Tracking', id: 'Pelacakan Vital', vi: 'Theo dõi chỉ số' },
+  feat2Desc: { zh: '血壓、血糖、血氧自動判定正常 / 異常，趨勢主動提醒', en: 'BP, glucose, SpO2 automatically flagged as normal or abnormal, trends surface automatically', id: 'BP, glukosa, SpO2 secara otomatis ditandai normal atau tidak', vi: 'Huyết áp, đường huyết, SpO2 tự động đánh dấu bình thường hay bất thường' },
+  feat3Title: { zh: '外籍看護友善', en: 'Caregiver Friendly', id: 'Ramah Perawat', vi: 'Thân thiện người chăm sóc' },
+  feat3Desc: { zh: '四國語言切換，大按鈕介面，看護輕鬆完成打卡紀錄', en: 'Four languages supported, large buttons, caregivers can record without hassle', id: 'Empat bahasa didukung, tombol besar, perawat dapat merekam dengan mudah', vi: 'Hỗ trợ bốn ngôn ngữ, nút lớn, người chăm sóc ghi dễ dàng' },
+  // Login
+  loginStart: { zh: '開始使用', en: 'Get Started', id: 'Mulai', vi: 'Bắt đầu' },
+  loginIntro: { zh: '選一種方式建立你的個人空間，資料只在這台裝置、只有你能看到。', en: 'Pick a way to create your space. Data stays on this device, only you can see it.', id: 'Pilih cara untuk membuat ruang Anda. Data tetap di perangkat ini.', vi: 'Chọn cách tạo không gian của bạn. Dữ liệu chỉ ở trên thiết bị này.' },
+  loginLine: { zh: '用 LINE 快速登入', en: 'Sign in with LINE', id: 'Masuk dengan LINE', vi: 'Đăng nhập bằng LINE' },
+  loginEmail: { zh: '用 Email 登入', en: 'Sign in with Email', id: 'Masuk dengan Email', vi: 'Đăng nhập bằng Email' },
+  loginGuest: { zh: '以訪客身分試用 →', en: 'Try as guest →', id: 'Coba sebagai tamu →', vi: 'Thử như khách →' },
+  nickname: { zh: '暱稱', en: 'Nickname', id: 'Nama panggilan', vi: 'Biệt danh' },
+  email: { zh: 'Email', en: 'Email', id: 'Email', vi: 'Email' },
+  createSpace: { zh: '建立個人空間', en: 'Create My Space', id: 'Buat Ruang Saya', vi: 'Tạo không gian của tôi' },
+  // Patient
+  addPatient: { zh: '新增被照顧者', en: 'Add Person', id: 'Tambah Orang', vi: 'Thêm người' },
+  editPatient: { zh: '編輯資料', en: 'Edit Info', id: 'Edit Info', vi: 'Sửa thông tin' },
+  name: { zh: '稱呼', en: 'Name / Relation', id: 'Nama / Hubungan', vi: 'Tên / Quan hệ' },
+  birthDate: { zh: '生日', en: 'Birth Date', id: 'Tanggal Lahir', vi: 'Ngày sinh' },
+  gender: { zh: '性別', en: 'Gender', id: 'Jenis Kelamin', vi: 'Giới tính' },
+  bloodType: { zh: '血型', en: 'Blood Type', id: 'Gol. Darah', vi: 'Nhóm máu' },
+  female: { zh: '女性', en: 'Female', id: 'Perempuan', vi: 'Nữ' },
+  male: { zh: '男性', en: 'Male', id: 'Laki-laki', vi: 'Nam' },
+  weight: { zh: '體重', en: 'Weight', id: 'Berat', vi: 'Cân nặng' },
+  height: { zh: '身高', en: 'Height', id: 'Tinggi', vi: 'Chiều cao' },
+  conditions: { zh: '慢性病 / 目前疾病', en: 'Conditions', id: 'Kondisi', vi: 'Bệnh mãn tính' },
+  allergies: { zh: '過敏藥物 / 食物', en: 'Allergies', id: 'Alergi', vi: 'Dị ứng' },
+  medicalHistory: { zh: '重要病史', en: 'Medical History', id: 'Riwayat Medis', vi: 'Tiền sử bệnh' },
+  // Dashboard
+  welcomeCreated: { zh: '已建立', en: 'Created', id: 'Dibuat', vi: 'Đã tạo' },
+  alertsTitle: { zh: '健康提醒', en: 'Health Alerts', id: 'Peringatan Kesehatan', vi: 'Cảnh báo sức khỏe' },
+  latestBP: { zh: '最新血壓', en: 'Latest BP', id: 'BP Terbaru', vi: 'Huyết áp gần nhất' },
+  latestGlucose: { zh: '最新血糖', en: 'Latest Glucose', id: 'Glukosa Terbaru', vi: 'Đường huyết gần nhất' },
+  currentMeds: { zh: '目前用藥', en: 'Current Meds', id: 'Obat Saat Ini', vi: 'Thuốc đang dùng' },
+  nextVisit: { zh: '下次回診', en: 'Next Visit', id: 'Kunjungan Berikut', vi: 'Lần khám tới' },
+  medsUnit: { zh: '種', en: 'meds', id: 'obat', vi: 'thuốc' },
+  // Vitals
+  addRecord: { zh: '新增紀錄', en: 'Add Record', id: 'Tambah', vi: 'Thêm' },
+  days7: { zh: '近 7 天', en: 'Last 7 days', id: '7 hari', vi: '7 ngày qua' },
+  days30: { zh: '近 30 天', en: 'Last 30 days', id: '30 hari', vi: '30 ngày qua' },
+  days90: { zh: '近 90 天', en: 'Last 90 days', id: '90 hari', vi: '90 ngày qua' },
+  days365: { zh: '近 1 年', en: 'Last year', id: '1 tahun', vi: '1 năm' },
+  history: { zh: '歷史紀錄', en: 'History', id: 'Riwayat', vi: 'Lịch sử' },
+  records: { zh: '筆', en: 'records', id: 'catatan', vi: 'bản ghi' },
+  systolic: { zh: '收縮壓', en: 'Systolic', id: 'Sistolik', vi: 'Tâm thu' },
+  diastolic: { zh: '舒張壓', en: 'Diastolic', id: 'Diastolik', vi: 'Tâm trương' },
+  heartRate: { zh: '心率', en: 'Heart Rate', id: 'Nadi', vi: 'Nhịp tim' },
+  glucose: { zh: '血糖', en: 'Glucose', id: 'Glukosa', vi: 'Đường huyết' },
+  spo2: { zh: '血氧', en: 'SpO2', id: 'SpO2', vi: 'SpO2' },
+  temperature: { zh: '體溫', en: 'Temp', id: 'Suhu', vi: 'Nhiệt độ' },
+  noRecords: { zh: '還沒有紀錄', en: 'No records yet', id: 'Belum ada catatan', vi: 'Chưa có bản ghi' },
+  // Status levels
+  statusNormal: { zh: '正常', en: 'Normal', id: 'Normal', vi: 'Bình thường' },
+  statusElevated: { zh: '偏高', en: 'Elevated', id: 'Tinggi', vi: 'Cao' },
+  statusHigh: { zh: '過高', en: 'High', id: 'Tinggi sekali', vi: 'Rất cao' },
+  statusLow: { zh: '偏低', en: 'Low', id: 'Rendah', vi: 'Thấp' },
+  statusVeryLow: { zh: '過低', en: 'Very low', id: 'Sangat rendah', vi: 'Rất thấp' },
+  statusFever: { zh: '發燒', en: 'Fever', id: 'Demam', vi: 'Sốt' },
+  // Meds
+  addMed: { zh: '新增藥物', en: 'Add Medication', id: 'Tambah Obat', vi: 'Thêm thuốc' },
+  scanBag: { zh: '拍藥袋自動辨識', en: 'Scan Rx Bag', id: 'Pindai Kemasan', vi: 'Quét túi thuốc' },
+  currentMedsList: { zh: '目前服用', en: 'Current Medications', id: 'Obat Saat Ini', vi: 'Thuốc đang dùng' },
+  stoppedMeds: { zh: '已停用', en: 'Discontinued', id: 'Dihentikan', vi: 'Đã ngưng' },
+  medName: { zh: '藥名', en: 'Medication Name', id: 'Nama Obat', vi: 'Tên thuốc' },
+  dosage: { zh: '劑量 / 服用方式', en: 'Dosage', id: 'Dosis', vi: 'Liều lượng' },
+  schedule: { zh: '服用時段', en: 'Schedule', id: 'Jadwal', vi: 'Lịch uống' },
+  withFood: { zh: '用餐關係', en: 'With Meal', id: 'Dengan Makanan', vi: 'Với bữa ăn' },
+  stillTaking: { zh: '仍在服用', en: 'Still taking', id: 'Masih minum', vi: 'Vẫn đang uống' },
+  // Consult
+  addVisit: { zh: '新增看診紀錄（含錄音）', en: 'New Visit (with recording)', id: 'Kunjungan Baru', vi: 'Buổi khám mới' },
+  noVisits: { zh: '還沒有看診紀錄', en: 'No visits yet', id: 'Belum ada kunjungan', vi: 'Chưa có buổi khám' },
+  preVisitTitle: { zh: '下次看診要問的事', en: 'To ask next visit', id: 'Tanyakan kunjungan berikut', vi: 'Hỏi vào buổi khám sau' },
+  aiRemindersTitle: { zh: 'AI 建議回診時確認', en: 'AI suggestions for next visit', id: 'Saran AI untuk kunjungan berikut', vi: 'Gợi ý AI cho buổi khám sau' },
+  generateAiReminders: { zh: '用 AI 綜合分析產生提醒', en: 'Generate with AI', id: 'Buat dengan AI', vi: 'Tạo bằng AI' },
+  hospital: { zh: '醫院', en: 'Hospital', id: 'Rumah Sakit', vi: 'Bệnh viện' },
+  department: { zh: '科別', en: 'Department', id: 'Bagian', vi: 'Khoa' },
+  doctor: { zh: '醫師', en: 'Doctor', id: 'Dokter', vi: 'Bác sĩ' },
+  chiefComplaint: { zh: '主訴', en: 'Chief Complaint', id: 'Keluhan Utama', vi: 'Triệu chứng chính' },
+  diagnosis: { zh: '診斷', en: 'Diagnosis', id: 'Diagnosis', vi: 'Chẩn đoán' },
+  plan: { zh: '處置 / 醫囑', en: 'Plan / Orders', id: 'Rencana', vi: 'Kế hoạch' },
+  recordVoice: { zh: '醫囑錄音', en: 'Voice Recording', id: 'Rekaman', vi: 'Ghi âm' },
+  startRec: { zh: '開始錄音', en: 'Start', id: 'Mulai', vi: 'Bắt đầu' },
+  stopRec: { zh: '停止', en: 'Stop', id: 'Berhenti', vi: 'Dừng' },
+  uploadAudio: { zh: '上傳音檔', en: 'Upload Audio', id: 'Unggah Audio', vi: 'Tải lên' },
+  generateSummary: { zh: '用 AI 產生摘要', en: 'Generate AI Summary', id: 'Buat Ringkasan AI', vi: 'Tạo tóm tắt AI' },
+  aiSummary: { zh: 'AI 摘要（可編輯）', en: 'AI Summary (editable)', id: 'Ringkasan AI', vi: 'Tóm tắt AI' },
+  // CareLogs
+  addCareLog: { zh: '新增病況 / 交接紀錄', en: 'Add Status / Handover', id: 'Tambah Status', vi: 'Thêm trạng thái' },
+  noCareLogs: { zh: '還沒有病況紀錄', en: 'No status logs yet', id: 'Belum ada', vi: 'Chưa có' },
+  careLogContent: { zh: '補充描述', en: 'Additional Notes', id: 'Catatan Tambahan', vi: 'Ghi chú thêm' },
+  followUp: { zh: '接手請注意', en: 'For next caregiver', id: 'Untuk perawat berikutnya', vi: 'Cho người chăm sóc sau' },
+  quickTag: { zh: '快速打勾', en: 'Quick Check', id: 'Cek Cepat', vi: 'Đánh dấu nhanh' },
+  context: { zh: '情境', en: 'Context', id: 'Konteks', vi: 'Bối cảnh' },
+  author: { zh: '紀錄人', en: 'Recorded by', id: 'Dicatat oleh', vi: 'Người ghi' },
+  modeHospital: { zh: '住院', en: 'Hospital', id: 'Rawat Inap', vi: 'Nhập viện' },
+  modeUnwell: { zh: '不適', en: 'Unwell', id: 'Sakit', vi: 'Khó chịu' },
+  modeDaily: { zh: '日常', en: 'Daily', id: 'Harian', vi: 'Hằng ngày' },
+  // ERCard
+  medicalCard: { zh: '醫療摘要卡', en: 'Medical Summary Card', id: 'Kartu Medis', vi: 'Thẻ tóm tắt y tế' },
+  printCard: { zh: '列印 / 存 PDF', en: 'Print / Save PDF', id: 'Cetak / PDF', vi: 'In / PDF' },
+  last7DaysVitals: { zh: '近 7 天數值統計', en: 'Last 7 Days Stats', id: 'Statistik 7 Hari', vi: 'Thống kê 7 ngày' },
+  avgBP: { zh: '血壓平均', en: 'Avg BP', id: 'BP Rata²', vi: 'HA TB' },
+  highestBP: { zh: '最高血壓', en: 'Highest BP', id: 'BP Tertinggi', vi: 'HA cao nhất' },
+  abnormalCount: { zh: '異常次數', en: 'Abnormal', id: 'Abnormal', vi: 'Bất thường' },
+  // Caregiver mode
+  caregiverModeTitle: { zh: '看護模式', en: 'Caregiver Mode', id: 'Mode Perawat', vi: 'Chế độ chăm sóc' },
+  familyModeTitle: { zh: '家屬模式', en: 'Family Mode', id: 'Mode Keluarga', vi: 'Chế độ gia đình' },
+  switchToCaregiver: { zh: '切到看護模式', en: 'Caregiver Mode', id: 'Mode Perawat', vi: 'Chế độ chăm sóc' },
+  switchToFamily: { zh: '切回家屬模式', en: 'Back to Family', id: 'Kembali Keluarga', vi: 'Về gia đình' },
+  language: { zh: '介面語言', en: 'Language', id: 'Bahasa', vi: 'Ngôn ngữ' },
+  // AI
+  aiProvider: { zh: 'AI 服務商', en: 'AI Provider', id: 'Penyedia AI', vi: 'Nhà cung cấp AI' },
+  apiKey: { zh: 'API Key', en: 'API Key', id: 'Kunci API', vi: 'Khóa API' },
+  model: { zh: '模型', en: 'Model', id: 'Model', vi: 'Mô hình' },
+  scanningImage: { zh: 'AI 辨識中...', en: 'Scanning...', id: 'Memindai...', vi: 'Đang quét...' },
+  generating: { zh: '產生中...', en: 'Generating...', id: 'Membuat...', vi: 'Đang tạo...' }
+};
+const t = (key, lang = 'zh') => DICT[key]?.[lang] || DICT[key]?.zh || key;
+
+const MODES = { hospital: 'modeHospital', unwell: 'modeUnwell', daily: 'modeDaily' };
+const GLU_TYPES = { fasting: { zh: '空腹', en: 'Fasting', id: 'Puasa', vi: 'Đói' }, postprandial: { zh: '飯後', en: 'After meal', id: 'Setelah makan', vi: 'Sau ăn' }, bedtime: { zh: '睡前', en: 'Bedtime', id: 'Sebelum tidur', vi: 'Trước ngủ' }, random: { zh: '隨機', en: 'Random', id: 'Acak', vi: 'Bất kỳ' } };
+const SLOT_LABELS = { morning: { zh: '早', en: 'AM', id: 'Pg', vi: 'S' }, noon: { zh: '中', en: 'Noon', id: 'Sg', vi: 'T' }, evening: { zh: '晚', en: 'PM', id: 'Sr', vi: 'C' }, bedtime: { zh: '睡前', en: 'Night', id: 'Mlm', vi: 'Đêm' } };
+const gluText = (type, lang) => GLU_TYPES[type]?.[lang] || type;
+const slotText = (slot, lang) => SLOT_LABELS[slot]?.[lang] || slot;
+
+// ========== 工具函式 ==========
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const now = () => new Date().toISOString();
+const fmtDate = (iso) => { if(!iso) return ''; const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`; };
+const fmtTime = (iso) => { if(!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+const fmtDateTime = (iso) => iso ? `${fmtDate(iso)} ${fmtTime(iso)}` : '';
+const toLocalInput = (iso) => { if(!iso) return ''; const d = new Date(iso); const o = d.getTimezoneOffset(); return new Date(d.getTime() - o*60000).toISOString().slice(0,16); };
+const fromLocalInput = (v) => v ? new Date(v).toISOString() : '';
+const daysBetween = (a, b) => Math.floor((new Date(b) - new Date(a)) / (1000*60*60*24));
+
+// ========== 數值判定（正常/異常） ==========
+function classifyBP(sys, dia) {
+  if (!sys) return null;
+  if (sys < 90 || dia < 60) return { level: 'low', labelKey: 'statusVeryLow', color: 'blue' };
+  if (sys >= 180 || dia >= 110) return { level: 'crisis', labelKey: 'statusHigh', color: 'red' };
+  if (sys >= 140 || dia >= 90) return { level: 'high', labelKey: 'statusHigh', color: 'red' };
+  if (sys >= 130 || dia >= 80) return { level: 'elevated', labelKey: 'statusElevated', color: 'amber' };
+  return { level: 'normal', labelKey: 'statusNormal', color: 'emerald' };
+}
+function classifyGlucose(value, type) {
+  if (!value) return null;
+  if (value < 70) return { level: 'low', labelKey: 'statusVeryLow', color: 'blue' };
+  if (type === 'fasting') {
+    if (value >= 126) return { level: 'high', labelKey: 'statusHigh', color: 'red' };
+    if (value >= 100) return { level: 'elevated', labelKey: 'statusElevated', color: 'amber' };
+  } else {
+    if (value >= 200) return { level: 'high', labelKey: 'statusHigh', color: 'red' };
+    if (value >= 140) return { level: 'elevated', labelKey: 'statusElevated', color: 'amber' };
+  }
+  return { level: 'normal', labelKey: 'statusNormal', color: 'emerald' };
+}
+function classifySpo2(v) {
+  if (!v) return null;
+  if (v < 90) return { level: 'crisis', labelKey: 'statusVeryLow', color: 'red' };
+  if (v < 95) return { level: 'low', labelKey: 'statusLow', color: 'amber' };
+  return { level: 'normal', labelKey: 'statusNormal', color: 'emerald' };
+}
+function classifyTemp(v) {
+  if (!v) return null;
+  if (v >= 38) return { level: 'fever', labelKey: 'statusFever', color: 'red' };
+  if (v >= 37.3) return { level: 'elevated', labelKey: 'statusElevated', color: 'amber' };
+  if (v < 36) return { level: 'low', labelKey: 'statusLow', color: 'blue' };
+  return { level: 'normal', labelKey: 'statusNormal', color: 'emerald' };
+}
+const colorClasses = {
+  emerald: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  amber: 'bg-amber-100 text-amber-700 border-amber-200',
+  red: 'bg-red-100 text-red-700 border-red-200',
+  blue: 'bg-blue-100 text-blue-700 border-blue-200'
+};
+const StatusBadge = ({ status, lang }) => {
+  if (!status) return null;
+  return <span className={'inline-block px-2 py-0.5 rounded text-xs border ' + colorClasses[status.color]}>{t(status.labelKey, lang)}</span>;
+};
+
+// ========== Storage ==========
+const safeLS = {
+  get: (k) => { try { return localStorage.getItem(k); } catch(e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch(e) { console.warn('LS set failed', e.message); } },
+  remove: (k) => { try { localStorage.removeItem(k); } catch(e) {} }
+};
+const PROFILE_INDEX_KEY = 'iltc_v2_profiles';
+const PROFILE_CURRENT_KEY = 'iltc_v2_current_profile';
+const dataKeyFor = (pid) => `iltc_v2_data_${pid}`;
+const loadProfileIndex = () => { try { return JSON.parse(safeLS.get(PROFILE_INDEX_KEY) || '[]'); } catch(e) { return []; } };
+const saveProfileIndex = (list) => safeLS.set(PROFILE_INDEX_KEY, JSON.stringify(list));
+const getCurrentProfileId = () => safeLS.get(PROFILE_CURRENT_KEY);
+const setCurrentProfileId = (id) => { if (id) safeLS.set(PROFILE_CURRENT_KEY, id); else safeLS.remove(PROFILE_CURRENT_KEY); };
+
+const defaultState = {
+  patients: [], currentPatientId: null,
+  vitals: {}, medications: {}, consultations: {}, careLogs: {}, preVisitQuestions: {}, aiReminders: {},
+  settings: { aiProvider: 'gemini', apiKey: '', model: '', lang: 'zh' }
+};
+const loadState = (pid) => {
+  if (!pid) return defaultState;
+  const raw = safeLS.get(dataKeyFor(pid));
+  if (raw) { try { return { ...defaultState, ...JSON.parse(raw) }; } catch(e){} }
+  return defaultState;
+};
+const saveState = (pid, s) => { if (pid) safeLS.set(dataKeyFor(pid), JSON.stringify(s)); };
+
+// ========== Reducer ==========
+function reducer(state, action) {
+  const pid = state.currentPatientId;
+  const setColl = (coll, arr) => ({ ...state, [coll]: { ...state[coll], [pid]: arr } });
+  switch (action.type) {
+    case 'SET_STATE': return action.payload;
+    case 'ADD_PATIENT': { const p = { id: uid(), createdAt: now(), ...action.payload }; return { ...state, patients: [...state.patients, p], currentPatientId: p.id }; }
+    case 'UPDATE_PATIENT': return { ...state, patients: state.patients.map(p => p.id === action.payload.id ? { ...p, ...action.payload } : p) };
+    case 'DELETE_PATIENT': { const rest = state.patients.filter(p => p.id !== action.payload); return { ...state, patients: rest, currentPatientId: rest[0]?.id || null }; }
+    case 'SET_CURRENT_PATIENT': return { ...state, currentPatientId: action.payload };
+    case 'ADD_VITAL': return setColl('vitals', [...(state.vitals[pid]||[]), { id: uid(), ...action.payload }]);
+    case 'DELETE_VITAL': return setColl('vitals', (state.vitals[pid]||[]).filter(v => v.id !== action.payload));
+    case 'ADD_MEDICATION': return setColl('medications', [...(state.medications[pid]||[]), { id: uid(), active: true, ...action.payload }]);
+    case 'UPDATE_MEDICATION': return setColl('medications', (state.medications[pid]||[]).map(m => m.id === action.payload.id ? { ...m, ...action.payload } : m));
+    case 'DELETE_MEDICATION': return setColl('medications', (state.medications[pid]||[]).filter(m => m.id !== action.payload));
+    case 'ADD_CONSULTATION': return setColl('consultations', [...(state.consultations[pid]||[]), { id: uid(), ...action.payload }]);
+    case 'UPDATE_CONSULTATION': return setColl('consultations', (state.consultations[pid]||[]).map(c => c.id === action.payload.id ? { ...c, ...action.payload } : c));
+    case 'DELETE_CONSULTATION': return setColl('consultations', (state.consultations[pid]||[]).filter(c => c.id !== action.payload));
+    case 'ADD_CARELOG': return setColl('careLogs', [...(state.careLogs[pid]||[]), { id: uid(), ...action.payload }]);
+    case 'DELETE_CARELOG': return setColl('careLogs', (state.careLogs[pid]||[]).filter(l => l.id !== action.payload));
+    case 'ADD_QUESTION': return setColl('preVisitQuestions', [...(state.preVisitQuestions[pid]||[]), { id: uid(), ...action.payload, done: false, createdAt: now() }]);
+    case 'TOGGLE_QUESTION': return setColl('preVisitQuestions', (state.preVisitQuestions[pid]||[]).map(q => q.id === action.payload ? { ...q, done: !q.done } : q));
+    case 'DELETE_QUESTION': return setColl('preVisitQuestions', (state.preVisitQuestions[pid]||[]).filter(q => q.id !== action.payload));
+    case 'SET_AI_REMINDERS': return setColl('aiReminders', action.payload);
+    case 'UPDATE_SETTINGS': return { ...state, settings: { ...state.settings, ...action.payload } };
+    default: return state;
+  }
+}
+
+const AppCtx = createContext(null);
+
+// ========== AI Provider 呼叫抽象 ==========
+async function callAI(settings, system, user) {
+  // 後端模式優先
+  if (USE_BACKEND) {
+    const res = await apiFetch('/api/ai/chat', { method: 'POST', body: JSON.stringify({ system, user }) });
+    if (!res.ok) { const err = await res.text(); throw new Error(err); }
+    const data = await res.json();
+    return data.text || '';
+  }
+  const provider = settings.aiProvider || 'gemini';
+  if (provider === 'gemini') {
+    const model = settings.model || 'gemini-1.5-flash';
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.apiKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system_instruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: user }] }] })
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  } else if (provider === 'openai') {
+    const model = settings.model || 'gpt-4o-mini';
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + settings.apiKey },
+      body: JSON.stringify({ model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] })
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
+  } else {
+    const model = settings.model || 'claude-sonnet-4-5';
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model, max_tokens: 2000, system, messages: [{ role: 'user', content: user }] })
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = await res.json();
+    return data.content?.[0]?.text || '';
+  }
+}
+
+// 呼叫 AI Vision（目前只支援 Gemini / OpenAI，Claude 需另外格式）
+async function callAIVision(settings, system, user, imageBase64, mimeType) {
+  if (USE_BACKEND) {
+    const res = await apiFetch('/api/ai/vision', { method: 'POST', body: JSON.stringify({ system, user, imageBase64, mimeType }) });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = await res.json();
+    return data.text || '';
+  }
+  const provider = settings.aiProvider || 'gemini';
+  if (provider === 'gemini') {
+    const model = settings.model || 'gemini-1.5-flash';
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.apiKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: user }, { inline_data: { mime_type: mimeType, data: imageBase64 } }] }]
+      })
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  } else if (provider === 'openai') {
+    const model = settings.model || 'gpt-4o-mini';
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + settings.apiKey },
+      body: JSON.stringify({ model, messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: [{ type: 'text', text: user }, { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } }] }
+      ] })
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
+  } else {
+    throw new Error('Claude browser vision 暫不支援，請改用 Gemini 或 OpenAI');
+  }
+}
+
+// ========== 基本 UI 元件 ==========
+const Btn = ({ children, onClick, variant = 'primary', type = 'button', disabled, className = '' }) => {
+  const s = { primary: 'bg-cyan-600 text-white hover:bg-cyan-700 disabled:bg-slate-300 shadow-sm', secondary: 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50', danger: 'bg-red-500 text-white hover:bg-red-600', ghost: 'text-slate-600 hover:bg-slate-100', line: 'bg-[#06C755] text-white hover:bg-[#05B34A] shadow-sm' }[variant];
+  return <button type={type} onClick={onClick} disabled={disabled} className={'px-4 py-2.5 rounded-lg font-medium text-sm transition ' + s + ' ' + className}>{children}</button>;
+};
+const Label = ({ children, required }) => <label className="block text-sm font-medium text-slate-700 mb-1.5">{children}{required && <span className="text-red-500 ml-0.5">*</span>}</label>;
+const Input = React.forwardRef((props, ref) => <input ref={ref} {...props} className={'w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-transparent outline-none text-base ' + (props.className||'')} />);
+const TextArea = (props) => <textarea {...props} className={'w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-transparent outline-none text-base ' + (props.className||'')} />;
+const Select = (props) => <select {...props} className={'w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-transparent outline-none text-base bg-white ' + (props.className||'')}>{props.children}</select>;
+const Modal = ({ open, onClose, title, children, maxWidth = 'max-w-lg' }) => {
+  // 開啟時鎖捲動，避免背景滑動（iOS LINE 內建瀏覽器特別有用）
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [open]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex sm:items-center sm:justify-center sm:p-4" onClick={onClose} style={{ height: '100dvh' }}>
+      <div className={'bg-white w-full flex flex-col shadow-2xl overflow-hidden sm:rounded-2xl sm:max-h-[92vh] sm:h-auto ' + maxWidth} onClick={e => e.stopPropagation()} style={{ height: '100dvh', maxHeight: '100dvh' }}>
+        <div className="px-4 sm:px-5 border-b border-slate-200 flex items-center justify-between bg-white z-10 shrink-0" style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}>
+          <h3 className="font-semibold text-base sm:text-lg truncate flex-1">{title}</h3>
+          <button onClick={onClose} className="ml-2 px-3 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-100 border border-slate-300 shrink-0">取消</button>
+        </div>
+        <div className="p-4 sm:p-5 overflow-y-auto flex-1" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)', WebkitOverflowScrolling: 'touch' }}>{children}</div>
+      </div>
+    </div>
+  );
+};
+const Empty = ({ title, subtitle, action }) => (
+  <div className="text-center py-12 px-4">
+    <div className="font-medium text-slate-700 mb-1">{title}</div>
+    {subtitle && <div className="text-sm text-slate-500 mb-4">{subtitle}</div>}
+    {action}
+  </div>
+);
+const Chips = ({ options, value, onChange, multi = false, className = '' }) => {
+  const toggle = (v) => { if (multi) { const arr = Array.isArray(value) ? value : []; onChange(arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v]); } else { onChange(value === v ? null : v); } };
+  const isOn = (v) => multi ? (Array.isArray(value) && value.includes(v)) : (value === v);
+  return (
+    <div className={'flex flex-wrap gap-2 ' + className}>
+      {options.map(opt => { const [v, label] = Array.isArray(opt) ? opt : [opt, opt]; return (
+        <button key={v} type="button" onClick={() => toggle(v)} className={'px-3 py-1.5 rounded-full text-sm border transition ' + (isOn(v) ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50')}>{label}</button>
+      );})}
+    </div>
+  );
+};
+// 取得支援的 mime type（各瀏覽器不同）
+const pickMimeType = () => {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg'];
+  if (typeof MediaRecorder === 'undefined') return null;
+  for (const m of candidates) { if (MediaRecorder.isTypeSupported(m)) return m; }
+  return '';
+};
+
+const VoiceBtn = ({ onResult, lang = 'zh-TW', className = '' }) => {
+  const [rec, setRec] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const recRef = useRef(null);
+  const chunksRef = useRef([]);
+  const streamRef = useRef(null);
+
+  const start = async () => {
+    if (!USE_BACKEND) { alert('語音輸入需要平台模式（LINE / Google 登入後使用）'); return; }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      alert('此瀏覽器不支援錄音。請改用 Chrome / Safari 14.3+ / Edge');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 16000, channelCount: 1 } });
+      streamRef.current = stream;
+      const mimeType = pickMimeType();
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        streamRef.current?.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+        const type = mr.mimeType || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type });
+        if (blob.size < 800) { setBusy(false); return; } // 太短忽略
+        setBusy(true);
+        try {
+          const ext = type.includes('mp4') ? 'mp4' : type.includes('ogg') ? 'ogg' : 'webm';
+          const form = new FormData();
+          form.append('audio', blob, 'rec.' + ext);
+          form.append('mode', 'short');
+          const tok = getToken();
+          const res = await fetch(BACKEND_URL + '/api/ai/transcribe', {
+            method: 'POST',
+            headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
+            body: form
+          });
+          if (!res.ok) throw new Error(await readError(res));
+          const data = await res.json();
+          if (data.text) onResult(data.text);
+        } catch (e) { alert('辨識失敗：' + (e.message || e).toString().slice(0, 200)); }
+        finally { setBusy(false); }
+      };
+      recRef.current = mr;
+      mr.start();
+      setRec(true);
+    } catch (e) {
+      alert('無法取用麥克風：' + (e.message || e.name || '未知') + '\n\n請確認已允許麥克風權限。');
+    }
+  };
+  const stop = () => {
+    try { recRef.current?.stop(); } catch {}
+    recRef.current = null;
+    setRec(false);
+  };
+  const toggle = () => (busy ? null : rec ? stop() : start());
+  return (
+    <button type="button" onClick={toggle} disabled={busy}
+      title={busy ? '辨識中...' : rec ? '點擊結束錄音' : '按下開始錄音'}
+      className={'flex items-center justify-center w-10 h-10 rounded-lg border shrink-0 transition ' +
+        (busy ? 'bg-slate-100 border-slate-200 text-slate-400' :
+         rec ? 'recording border-red-500 text-white' :
+         'bg-white border-slate-300 text-slate-500 hover:bg-slate-50') + ' ' + className}>
+      {busy
+        ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.2-8.55"/></svg>
+        : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+      }
+    </button>
+  );
+};
+const VoiceInput = ({ value, onChange, placeholder, className = '' }) => (
+  <div className={'flex gap-2 ' + className}>
+    <Input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} />
+    <VoiceBtn onResult={text => onChange(value ? value + ' ' + text : text)} />
+  </div>
+);
+const VoiceTextArea = ({ value, onChange, rows = 3, placeholder }) => (
+  <div className="relative">
+    <TextArea rows={rows} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="pr-14" />
+    <div className="absolute top-2 right-2"><VoiceBtn onResult={text => onChange(value ? value + (value.endsWith('\n') ? '' : '\n') + text : text)} /></div>
+  </div>
+);
+const NumberPad = ({ onAppend, onClear, onBackspace }) => (
+  <div className="grid grid-cols-3 gap-2">
+    {[1,2,3,4,5,6,7,8,9].map(n => <button key={n} type="button" onClick={() => onAppend(String(n))} className="py-3 bg-white border border-slate-200 rounded-lg text-xl font-medium hover:bg-slate-50">{n}</button>)}
+    <button type="button" onClick={onClear} className="py-3 bg-slate-100 border border-slate-200 rounded-lg text-sm hover:bg-slate-200">C</button>
+    <button type="button" onClick={() => onAppend('0')} className="py-3 bg-white border border-slate-200 rounded-lg text-xl font-medium hover:bg-slate-50">0</button>
+    <button type="button" onClick={onBackspace} className="py-3 bg-slate-100 border border-slate-200 rounded-lg text-sm hover:bg-slate-200">←</button>
+  </div>
+);
+const FieldBtn = ({ label, value, active, onClick }) => (
+  <button type="button" onClick={onClick} className={'p-3 rounded-lg border text-left ' + (active ? 'bg-cyan-50 border-cyan-500' : 'bg-white border-slate-200')}>
+    <div className="text-xs text-slate-500">{label}</div>
+    <div className="text-xl font-bold text-slate-800 h-7">{value || '—'}</div>
+  </button>
+);
+
+// ========== 語言切換器 ==========
+function LangSwitcher({ value, onChange, compact }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(!open)} className="flex items-center gap-1 px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium hover:bg-slate-50">
+        {LANGS[value].flag} {!compact && <span className="hidden sm:inline">{LANGS[value].name}</span>}
+        <span className="text-slate-400">▼</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-50 min-w-[140px]">
+          {Object.entries(LANGS).map(([k, v]) => (
+            <button key={k} onClick={() => { onChange(k); setOpen(false); }} className={'w-full text-left px-3 py-2 text-sm hover:bg-slate-50 ' + (value === k ? 'text-cyan-600 font-medium' : 'text-slate-700')}>
+              <span className="inline-block w-8 text-xs text-slate-400">{v.flag}</span> {v.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== About Overlay（在 App 內也可以看介紹頁） ==========
+function AboutOverlay({ lang, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto hero-bg">
+      <div className="hero-blob" style={{ width: 380, height: 380, background: '#67e8f9', top: -100, right: -100 }}></div>
+      <div className="hero-blob" style={{ width: 300, height: 300, background: '#a5f3fc', bottom: -80, left: -80 }}></div>
+      <button onClick={onClose} className="fixed top-4 right-4 z-50 w-10 h-10 rounded-full bg-white border border-slate-300 shadow flex items-center justify-center hover:bg-slate-50" title="關閉">
+        <span className="text-slate-600 text-xl leading-none">×</span>
+      </button>
+      <div className="relative max-w-4xl mx-auto px-6 py-10 sm:py-16">
+        <div className="flex items-center gap-2 mb-10">
+          <div className="w-9 h-9 bg-cyan-600 rounded-lg flex items-center justify-center text-white font-bold">醫</div>
+          <div className="font-bold text-lg">{t('appName', lang)}</div>
+        </div>
+        <div className="text-center fade-in-up">
+          <h1 className="text-3xl sm:text-5xl font-bold text-slate-900 mb-4 leading-tight">{t('heroTitle', lang)}</h1>
+          <p className="text-base sm:text-lg text-slate-600 max-w-2xl mx-auto mb-8">{t('heroDesc', lang)}</p>
+          <button onClick={onClose} className="px-8 py-3.5 bg-cyan-600 text-white rounded-xl font-semibold text-base hover:bg-cyan-700 shadow-lg shadow-cyan-600/20">返回我的紀錄</button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-16">
+          <FeatureCard title={t('feat1Title', lang)} desc={t('feat1Desc', lang)} num="01" />
+          <FeatureCard title={t('feat2Title', lang)} desc={t('feat2Desc', lang)} num="02" />
+          <FeatureCard title={t('feat3Title', lang)} desc={t('feat3Desc', lang)} num="03" />
+        </div>
+        <div className="text-center mt-12 text-xs text-slate-500">
+          Powered by iltc / 愛長照 · Not a substitute for medical diagnosis
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== 同步狀態指示燈 ==========
+function SyncIndicator({ status, error }) {
+  const [showTip, setShowTip] = useState(false);
+  if (!USE_BACKEND || status === 'idle') return null;
+  const color = status === 'synced' ? 'bg-emerald-500' : status === 'saving' ? 'bg-amber-400' : status === 'loading' ? 'bg-cyan-400' : 'bg-red-500';
+  const label = status === 'synced' ? '已同步' : status === 'saving' ? '同步中' : status === 'loading' ? '載入中' : '同步失敗';
+  return (
+    <button onClick={() => setShowTip(!showTip)} className="relative flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 px-2 py-1">
+      <span className={'w-2 h-2 rounded-full ' + color + (status === 'saving' ? ' animate-pulse' : '')}></span>
+      <span className="hidden sm:inline">{label}</span>
+      {showTip && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={e => { e.stopPropagation(); setShowTip(false); }}></div>
+          <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-50 p-3 min-w-[220px] text-left">
+            <div className="font-medium mb-1">雲端同步 · {label}</div>
+            {status === 'synced' && <div className="text-xs text-slate-500">資料已同步到雲端，換裝置登入同帳號可看到相同內容。</div>}
+            {status === 'saving' && <div className="text-xs text-slate-500">正在把剛才的變更送到雲端。</div>}
+            {status === 'loading' && <div className="text-xs text-slate-500">正在從雲端拉資料。</div>}
+            {status === 'error' && <div className="text-xs text-red-600">{error || '請稍後再試，本地仍有存檔'}</div>}
+          </div>
+        </>
+      )}
+    </button>
+  );
+}
+
+// ========== Landing ==========
+function Landing({ onLogin, lang, setLang }) {
+  const [showLogin, setShowLogin] = useState(false);
+  return (
+    <div className="min-h-screen hero-bg relative overflow-hidden">
+      <div className="hero-blob" style={{ width: 380, height: 380, background: '#67e8f9', top: -100, right: -100 }}></div>
+      <div className="hero-blob" style={{ width: 300, height: 300, background: '#a5f3fc', bottom: -80, left: -80 }}></div>
+      <div className="relative max-w-4xl mx-auto px-6 py-10 sm:py-16">
+        <div className="flex items-center justify-between mb-10 sm:mb-16">
+          <div className="flex items-center gap-2"><div className="w-9 h-9 bg-cyan-600 rounded-lg flex items-center justify-center text-white font-bold">醫</div><div className="font-bold text-lg">{t('appName', lang)}</div></div>
+          <div className="flex items-center gap-3">
+            <LangSwitcher value={lang} onChange={setLang} />
+            <button onClick={() => setShowLogin(true)} className="text-sm text-slate-600 hover:text-slate-900">{t('haveAccount', lang)}</button>
+          </div>
+        </div>
+        <div className="text-center fade-in-up">
+          <h1 className="text-3xl sm:text-5xl font-bold text-slate-900 mb-4 leading-tight">{t('heroTitle', lang)}</h1>
+          <p className="text-base sm:text-lg text-slate-600 max-w-2xl mx-auto mb-8">{t('heroDesc', lang)}</p>
+          <div className="flex justify-center">
+            <button onClick={() => setShowLogin(true)} className="px-8 py-3.5 bg-cyan-600 text-white rounded-xl font-semibold text-base hover:bg-cyan-700 shadow-lg shadow-cyan-600/20">{t('ctaStart', lang)}</button>
+          </div>
+          <div className="mt-4 text-xs text-slate-500">{t('privacyNote', lang)}</div>
+        </div>
+        <div id="features" className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-16 sm:mt-24">
+          <FeatureCard title={t('feat1Title', lang)} desc={t('feat1Desc', lang)} num="01" />
+          <FeatureCard title={t('feat2Title', lang)} desc={t('feat2Desc', lang)} num="02" />
+          <FeatureCard title={t('feat3Title', lang)} desc={t('feat3Desc', lang)} num="03" />
+        </div>
+        <div className="text-center mt-12 text-xs text-slate-500">
+          Powered by iltc / 愛長照 · Not a substitute for medical diagnosis
+          <div className="mt-2 text-[10px] text-slate-400">v3.3 build 20260502 {USE_BACKEND ? '· 平台模式' : '· 個人模式'}</div>
+        </div>
+      </div>
+      {showLogin && <LoginModal onClose={() => setShowLogin(false)} onLogin={onLogin} lang={lang} />}
+    </div>
+  );
+}
+const FeatureCard = ({ title, desc, num }) => (
+  <div className="bg-white/80 backdrop-blur p-5 rounded-2xl border border-slate-200 hover:border-cyan-300 hover:shadow-md transition">
+    <div className="text-cyan-600 font-mono text-sm mb-2">{num}</div>
+    <div className="font-semibold text-slate-900 mb-1">{title}</div>
+    <div className="text-sm text-slate-600">{desc}</div>
+  </div>
+);
+
+function LoginModal({ onClose, onLogin, lang }) {
+  const [mode, setMode] = useState('choose');
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const loginEmail = () => {
+    if (!email.includes('@')) return alert('Please enter a valid email');
+    const pid = 'email_' + email.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    onLogin({ id: pid, name: name || email.split('@')[0], email, type: 'email' });
+    onClose();
+  };
+  const loginGuest = () => {
+    const pid = 'guest_' + Date.now().toString(36);
+    onLogin({ id: pid, name: name || 'Guest', type: 'guest' });
+    onClose();
+  };
+  const loginLine = () => {
+    if (USE_BACKEND) {
+      window.location.href = BACKEND_URL + '/api/auth/line/start';
+      return;
+    }
+    setMode('line');
+  };
+  const loginGoogle = () => {
+    if (USE_BACKEND) {
+      window.location.href = BACKEND_URL + '/api/auth/google/start';
+      return;
+    }
+    alert('Google 登入需要後端支援，請改用 Email 登入');
+  };
+  const loginLineFinish = () => {
+    if (!name.trim()) return alert('Please enter a nickname');
+    const pid = 'line_' + name.trim().toLowerCase().replace(/\s+/g, '_') + '_' + Date.now().toString(36).slice(-4);
+    onLogin({ id: pid, name: name.trim(), type: 'line' });
+    onClose();
+  };
+  return (
+    <Modal open={true} onClose={onClose} title={mode === 'choose' ? t('loginStart', lang) : mode === 'email' ? t('loginEmail', lang) : t('loginLine', lang)}>
+      {mode === 'choose' && (
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600 mb-4">{t('loginIntro', lang)}</p>
+          <button onClick={loginLine} className="w-full py-3.5 bg-[#06C755] text-white rounded-xl font-semibold hover:bg-[#05B34A] flex items-center justify-center gap-2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 5.67 2 10.18c0 4.04 3.54 7.42 8.35 8.09.32.07.76.21.87.49.1.25.07.65.03.9l-.14.84c-.04.25-.2.98.86.53 1.06-.45 5.73-3.37 7.81-5.77C21.16 13.61 22 11.97 22 10.18 22 5.67 17.52 2 12 2z"/></svg>
+            {t('loginLine', lang)}
+          </button>
+          <button onClick={loginGoogle} className="w-full py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-semibold hover:bg-slate-50 flex items-center justify-center gap-2">
+            <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+            用 Google 登入
+          </button>
+          <button onClick={() => setMode('guest')} className="w-full py-3 text-slate-500 text-sm hover:text-slate-700">{t('loginGuest', lang)}</button>
+        </div>
+      )}
+      {mode === 'email' && (
+        <div className="space-y-3">
+          <div><Label>{t('nickname', lang)}</Label><Input value={name} onChange={e => setName(e.target.value)} /></div>
+          <div><Label required>{t('email', lang)}</Label><Input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" /></div>
+          <div className="flex gap-2"><Btn onClick={loginEmail} className="flex-1">{t('createSpace', lang)}</Btn><Btn variant="secondary" onClick={() => setMode('choose')}>{t('back', lang)}</Btn></div>
+        </div>
+      )}
+      {mode === 'line' && (
+        <div className="space-y-3">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">Demo mode: LINE OAuth requires backend. For now, enter a nickname to create a local profile.</div>
+          <div><Label required>{t('nickname', lang)}</Label><Input value={name} onChange={e => setName(e.target.value)} /></div>
+          <div className="flex gap-2"><Btn onClick={loginLineFinish} className="flex-1">{t('create', lang)}</Btn><Btn variant="secondary" onClick={() => setMode('choose')}>{t('back', lang)}</Btn></div>
+        </div>
+      )}
+      {mode === 'guest' && (
+        <div className="space-y-3">
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-600">Guest data is local only. Clearing browser data will delete it.</div>
+          <div><Label>{t('nickname', lang)}</Label><Input value={name} onChange={e => setName(e.target.value)} /></div>
+          <div className="flex gap-2"><Btn onClick={loginGuest} className="flex-1">{t('create', lang)}</Btn><Btn variant="secondary" onClick={() => setMode('choose')}>{t('back', lang)}</Btn></div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ========== Patient Editor ==========
+function PatientEditor({ patient, onClose, lang }) {
+  const { dispatch } = useContext(AppCtx);
+  const isNew = !patient.id;
+  const [form, setForm] = useState({ name: '', birthDate: '', gender: '', bloodType: '', weight: '', height: '', allergies: '', conditions: '', medicalHistory: '', ...patient });
+  const up = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const submit = (e) => {
+    e.preventDefault();
+    if (!form.name.trim()) return alert('Name required');
+    dispatch({ type: isNew ? 'ADD_PATIENT' : 'UPDATE_PATIENT', payload: form });
+    onClose();
+  };
+  const remove = () => { if (confirm('Delete?')) { dispatch({ type: 'DELETE_PATIENT', payload: form.id }); onClose(); } };
+  const commonConditions = ['高血壓', '糖尿病', '高血脂', '心律不整', '失智', '中風後', '慢性腎病', '氣喘', '關節炎', '骨質疏鬆'];
+  const commonAllergies = ['青黴素', '磺胺類', '海鮮', '花生', '阿斯匹靈', '顯影劑', '堅果', '乳製品'];
+  return (
+    <Modal open={true} onClose={onClose} title={isNew ? t('addPatient', lang) : t('editPatient', lang)} maxWidth="max-w-xl">
+      <form onSubmit={submit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label required>{t('name', lang)}</Label><Input value={form.name} onChange={e => up('name', e.target.value)} placeholder="阿嬤 / Mom" /></div>
+          <div><Label>{t('birthDate', lang)}</Label><Input type="date" value={form.birthDate} onChange={e => up('birthDate', e.target.value)} /></div>
+          <div><Label>{t('gender', lang)}</Label><Chips options={[['女', t('female', lang)],['男', t('male', lang)]]} value={form.gender} onChange={v => up('gender', v || '')} /></div>
+          <div><Label>{t('bloodType', lang)}</Label><Chips options={['A','B','O','AB']} value={form.bloodType} onChange={v => up('bloodType', v || '')} /></div>
+          <div><Label>{t('weight', lang)} (kg)</Label><Input type="number" step="0.1" value={form.weight} onChange={e => up('weight', e.target.value)} /></div>
+          <div><Label>{t('height', lang)} (cm)</Label><Input type="number" value={form.height} onChange={e => up('height', e.target.value)} /></div>
+        </div>
+        <div><Label>{t('conditions', lang)}</Label>
+          <Chips options={commonConditions} value={(form.conditions || '').split('、').filter(Boolean)} multi onChange={v => up('conditions', v.join('、'))} className="mb-2" />
+          <VoiceInput value={form.conditions} onChange={v => up('conditions', v)} />
+        </div>
+        <div><Label>{t('allergies', lang)}</Label>
+          <Chips options={commonAllergies} value={(form.allergies || '').split('、').filter(Boolean)} multi onChange={v => up('allergies', v.join('、'))} className="mb-2" />
+          <VoiceInput value={form.allergies} onChange={v => up('allergies', v)} />
+        </div>
+        <div><Label>{t('medicalHistory', lang)}</Label><VoiceTextArea rows={3} value={form.medicalHistory} onChange={v => up('medicalHistory', v)} /></div>
+        <div className="flex gap-2 pt-3">
+          <Btn type="submit" className="flex-1">{isNew ? t('create', lang) : t('save', lang)}</Btn>
+          {!isNew && <Btn variant="danger" onClick={remove}>{t('delete', lang)}</Btn>}
+          <Btn variant="secondary" onClick={onClose}>{t('cancel', lang)}</Btn>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// ========== Dashboard ==========
+function Dashboard({ lang }) {
+  const { state } = useContext(AppCtx);
+  const pid = state.currentPatientId;
+  const patient = state.patients.find(p => p.id === pid);
+  const vitals = state.vitals[pid] || [];
+  const meds = state.medications[pid] || [];
+  const consults = state.consultations[pid] || [];
+  const careLogs = state.careLogs[pid] || [];
+  const isEmpty = vitals.length === 0 && meds.length === 0 && consults.length === 0 && careLogs.length === 0;
+  const latestBP = [...vitals].filter(v => v.systolic).sort((a,b) => new Date(b.datetime) - new Date(a.datetime))[0];
+  const latestGlu = [...vitals].filter(v => v.glucose).sort((a,b) => new Date(b.datetime) - new Date(a.datetime))[0];
+  const activeMeds = meds.filter(m => m.active);
+  const nextVisit = consults.filter(c => c.nextVisit && new Date(c.nextVisit) >= new Date()).sort((a,b) => new Date(a.nextVisit) - new Date(b.nextVisit))[0];
+  const alerts = useMemo(() => {
+    const out = [];
+    const recent = vitals.filter(v => daysBetween(v.datetime, now()) <= 7);
+    const bps = recent.filter(v => v.systolic);
+    const abn = bps.filter(v => { const s = classifyBP(v.systolic, v.diastolic); return s && (s.level === 'high' || s.level === 'crisis'); });
+    if (abn.length >= 2) out.push(`近 7 天血壓異常 ${abn.length} 次`);
+    const glHigh = recent.filter(v => v.glucose).filter(v => { const s = classifyGlucose(v.glucose, v.glucoseType); return s && (s.level === 'high' || s.level === 'elevated'); });
+    if (glHigh.length >= 2) out.push(`近 7 天血糖異常 ${glHigh.length} 次`);
+    return out;
+  }, [vitals]);
+  return (
+    <div className="space-y-4">
+      {isEmpty && patient && (
+        <div className="bg-gradient-to-br from-cyan-50 to-blue-50 border border-cyan-200 rounded-2xl p-5">
+          <div className="font-semibold text-cyan-800 mb-1">{t('welcomeCreated', lang)}：{patient.name}</div>
+          <div className="text-sm text-cyan-700">從下方分頁開始記錄。</div>
+        </div>
+      )}
+      {alerts.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <div className="font-semibold text-amber-800 mb-2">{t('alertsTitle', lang)}</div>
+          {alerts.map((a, i) => <div key={i} className="text-sm text-amber-800">· {a}</div>)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <StatCard title={t('latestBP', lang)} value={latestBP ? `${latestBP.systolic}/${latestBP.diastolic}` : '—'} sub={latestBP ? fmtDateTime(latestBP.datetime) : '—'} status={latestBP ? classifyBP(latestBP.systolic, latestBP.diastolic) : null} lang={lang} />
+        <StatCard title={t('latestGlucose', lang)} value={latestGlu ? `${latestGlu.glucose}` : '—'} unit={latestGlu ? 'mg/dL' : ''} sub={latestGlu ? fmtDateTime(latestGlu.datetime) : '—'} status={latestGlu ? classifyGlucose(latestGlu.glucose, latestGlu.glucoseType) : null} lang={lang} />
+        <StatCard title={t('currentMeds', lang)} value={activeMeds.length} unit={t('medsUnit', lang)} />
+        <StatCard title={t('nextVisit', lang)} value={nextVisit ? fmtDate(nextVisit.nextVisit) : '—'} sub={nextVisit ? `${nextVisit.hospital} ${nextVisit.department}` : '—'} small />
+      </div>
+    </div>
+  );
+}
+const StatCard = ({ title, value, unit, sub, small, status, lang }) => (
+  <div className="bg-white rounded-xl p-4 border border-slate-200">
+    <div className="flex items-center justify-between mb-1">
+      <div className="text-xs text-slate-500">{title}</div>
+      {status && <StatusBadge status={status} lang={lang} />}
+    </div>
+    <div className={small ? "text-sm font-bold text-slate-800" : "text-2xl font-bold text-slate-800"}>{value}{unit && <span className="text-sm text-slate-400 ml-1">{unit}</span>}</div>
+    {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
+  </div>
+);
+
+// ========== Vitals ==========
+function Vitals({ lang }) {
+  const { state, dispatch } = useContext(AppCtx);
+  const pid = state.currentPatientId;
+  const records = state.vitals[pid] || [];
+  const [showForm, setShowForm] = useState(false);
+  const [range, setRange] = useState(30);
+  const chartData = useMemo(() => {
+    const cutoff = new Date(Date.now() - range * 86400000);
+    return [...records].filter(r => new Date(r.datetime) >= cutoff).sort((a,b) => new Date(a.datetime) - new Date(b.datetime));
+  }, [records, range]);
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Btn onClick={() => setShowForm(true)}>＋ {t('addRecord', lang)}</Btn>
+      </div>
+      {chartData.length > 0 ? (
+        <>
+          <VitalChart data={chartData} field="bp" title={t('systolic', lang) + ' / ' + t('diastolic', lang)} />
+          <VitalChart data={chartData} field="glucose" title={t('glucose', lang) + ' (mg/dL)'} lang={lang} />
+          <VitalChart data={chartData} field="spo2" title={t('spo2', lang)} />
+        </>
+      ) : <Empty title={t('noRecords', lang)} />}
+      <div className="flex items-center gap-1 bg-white/70 backdrop-blur p-1 rounded-xl border border-slate-200 shadow-sm">
+        {[[7, t('days7', lang)], [30, t('days30', lang)], [90, t('days90', lang)], [365, t('days365', lang)]].map(([val, label]) => (
+          <button key={val} onClick={() => setRange(val)} className={'flex-1 py-2 text-sm rounded-lg transition ' + (range === val ? 'bg-cyan-600 text-white font-medium shadow-sm' : 'text-slate-600 hover:bg-slate-100')}>{label}</button>
+        ))}
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100 font-medium">{t('history', lang)}（{records.length} {t('records', lang)}）</div>
+        <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+          {[...records].sort((a,b) => new Date(b.datetime) - new Date(a.datetime)).slice(0, 100).map(v => {
+            const bpS = classifyBP(v.systolic, v.diastolic);
+            const glS = classifyGlucose(v.glucose, v.glucoseType);
+            const spS = classifySpo2(v.spo2);
+            const tpS = classifyTemp(v.temperature);
+            return (
+              <div key={v.id} className="px-4 py-3">
+                <div className="flex items-start justify-between mb-1">
+                  <div className="text-xs text-slate-500">{fmtDateTime(v.datetime)}</div>
+                  <button onClick={() => { if(confirm('Delete?')) dispatch({ type: 'DELETE_VITAL', payload: v.id }); }} className="text-slate-300 hover:text-red-500 text-lg">×</button>
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {v.systolic && <div className="flex items-center gap-2"><span className="text-sm">{t('systolic', lang)}/{t('diastolic', lang)} <strong>{v.systolic}/{v.diastolic}</strong>{v.heartRate ? ` · ${v.heartRate}` : ''}</span><StatusBadge status={bpS} lang={lang} /></div>}
+                  {v.glucose && <div className="flex items-center gap-2"><span className="text-sm">{t('glucose', lang)} <strong>{v.glucose}</strong>（{gluText(v.glucoseType, lang)}）</span><StatusBadge status={glS} lang={lang} /></div>}
+                  {v.spo2 && <div className="flex items-center gap-2"><span className="text-sm">{t('spo2', lang)} <strong>{v.spo2}%</strong></span><StatusBadge status={spS} lang={lang} /></div>}
+                  {v.temperature && <div className="flex items-center gap-2"><span className="text-sm">{t('temperature', lang)} <strong>{v.temperature}°C</strong></span><StatusBadge status={tpS} lang={lang} /></div>}
+                  {v.weight && <div className="text-sm">{t('weight', lang)} <strong>{v.weight}kg</strong></div>}
+                </div>
+                {v.note && <div className="text-xs text-slate-400 mt-1">{v.note}</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {showForm && <VitalForm onClose={() => setShowForm(false)} lang={lang} />}
+    </div>
+  );
+}
+
+function VitalChart({ data, field, title, lang }) {
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(() => {
+    if (!ref.current || typeof Chart === 'undefined') return;
+    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    let datasets = [];
+    if (field === 'bp') {
+      const bp = data.filter(d => d.systolic); if (!bp.length) return;
+      datasets = [
+        { label: t('systolic', lang), data: bp.map(d => ({ x: d.datetime, y: d.systolic })), borderColor: '#ef4444', backgroundColor: '#ef444422', tension: 0.3 },
+        { label: t('diastolic', lang), data: bp.map(d => ({ x: d.datetime, y: d.diastolic })), borderColor: '#3b82f6', backgroundColor: '#3b82f622', tension: 0.3 },
+      ];
+    } else if (field === 'glucose') {
+      const gl = data.filter(d => d.glucose); if (!gl.length) return;
+      const byType = { fasting: [], postprandial: [], bedtime: [], random: [] };
+      gl.forEach(d => (byType[d.glucoseType || 'random'] || byType.random).push({ x: d.datetime, y: d.glucose }));
+      const colors = { fasting: '#10b981', postprandial: '#f59e0b', bedtime: '#8b5cf6', random: '#6b7280' };
+      Object.keys(byType).forEach(k => { if (byType[k].length) datasets.push({ label: gluText(k, lang), data: byType[k], borderColor: colors[k], backgroundColor: colors[k]+'22', tension: 0.3 }); });
+    } else if (field === 'spo2') {
+      const sp = data.filter(d => d.spo2); if (!sp.length) return;
+      datasets = [{ label: 'SpO2', data: sp.map(d => ({ x: d.datetime, y: d.spo2 })), borderColor: '#06b6d4', backgroundColor: '#06b6d422', tension: 0.3 }];
+    }
+    if (!datasets.length) return;
+    chartRef.current = new Chart(ref.current, { type: 'line', data: { datasets }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'day', displayFormats: { day: 'MM/dd' } }, grid: { display: false } }, y: { beginAtZero: false } }, plugins: { legend: { position: 'bottom' } } } });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [data, field, lang]);
+  const has = (field === 'bp' && data.some(d => d.systolic)) || (field === 'glucose' && data.some(d => d.glucose)) || (field === 'spo2' && data.some(d => d.spo2));
+  if (!has) return null;
+  return <div className="bg-white rounded-xl p-4 border border-slate-200"><div className="font-medium mb-3">{title}</div><div className="h-56"><canvas ref={ref}></canvas></div></div>;
+}
+
+// 數值參考範圍說明
+const RANGE_HINTS = {
+  bp: {
+    zh: [['正常', '收縮壓 <120 且 舒張壓 <80', 'emerald'], ['偏高', '120–129 / <80', 'amber'], ['高血壓一期', '130–139 / 80–89', 'amber'], ['高血壓二期', '≥140 / ≥90', 'red'], ['危急需就醫', '≥180 / ≥110', 'red'], ['低血壓', '<90 / <60', 'blue']],
+    en: [['Normal', 'SYS <120 & DIA <80', 'emerald'], ['Elevated', '120–129 / <80', 'amber'], ['Stage 1 HTN', '130–139 / 80–89', 'amber'], ['Stage 2 HTN', '≥140 / ≥90', 'red'], ['Crisis - seek help', '≥180 / ≥110', 'red'], ['Hypotension', '<90 / <60', 'blue']],
+    id: [['Normal', 'SYS <120 & DIA <80', 'emerald'], ['Meningkat', '120–129 / <80', 'amber'], ['HT Tahap 1', '130–139 / 80–89', 'amber'], ['HT Tahap 2', '≥140 / ≥90', 'red'], ['Krisis', '≥180 / ≥110', 'red'], ['Hipotensi', '<90 / <60', 'blue']],
+    vi: [['Bình thường', 'TT <120 & TTr <80', 'emerald'], ['Tăng nhẹ', '120–129 / <80', 'amber'], ['HA cao giai đoạn 1', '130–139 / 80–89', 'amber'], ['HA cao giai đoạn 2', '≥140 / ≥90', 'red'], ['Nguy hiểm', '≥180 / ≥110', 'red'], ['HA thấp', '<90 / <60', 'blue']]
+  },
+  glucoseFasting: {
+    zh: [['正常', '70–99 mg/dL', 'emerald'], ['前期糖尿病', '100–125', 'amber'], ['糖尿病', '≥126（需複驗）', 'red'], ['低血糖', '<70（可能冒汗、心悸）', 'blue']],
+    en: [['Normal', '70–99 mg/dL', 'emerald'], ['Pre-diabetes', '100–125', 'amber'], ['Diabetes', '≥126 (re-test)', 'red'], ['Hypoglycemia', '<70', 'blue']],
+    id: [['Normal', '70–99 mg/dL', 'emerald'], ['Pradiabetes', '100–125', 'amber'], ['Diabetes', '≥126', 'red'], ['Hipoglikemia', '<70', 'blue']],
+    vi: [['Bình thường', '70–99 mg/dL', 'emerald'], ['Tiền tiểu đường', '100–125', 'amber'], ['Tiểu đường', '≥126', 'red'], ['Hạ đường huyết', '<70', 'blue']]
+  },
+  glucosePost: {
+    zh: [['正常', '<140 mg/dL', 'emerald'], ['前期糖尿病', '140–199', 'amber'], ['糖尿病', '≥200', 'red']],
+    en: [['Normal', '<140 mg/dL', 'emerald'], ['Pre-diabetes', '140–199', 'amber'], ['Diabetes', '≥200', 'red']],
+    id: [['Normal', '<140 mg/dL', 'emerald'], ['Pradiabetes', '140–199', 'amber'], ['Diabetes', '≥200', 'red']],
+    vi: [['Bình thường', '<140 mg/dL', 'emerald'], ['Tiền tiểu đường', '140–199', 'amber'], ['Tiểu đường', '≥200', 'red']]
+  },
+  spo2: {
+    zh: [['正常', '≥95%', 'emerald'], ['偏低（需留意）', '90–94%', 'amber'], ['危急需就醫', '<90%', 'red']],
+    en: [['Normal', '≥95%', 'emerald'], ['Low (watch)', '90–94%', 'amber'], ['Critical', '<90%', 'red']],
+    id: [['Normal', '≥95%', 'emerald'], ['Rendah', '90–94%', 'amber'], ['Kritis', '<90%', 'red']],
+    vi: [['Bình thường', '≥95%', 'emerald'], ['Thấp', '90–94%', 'amber'], ['Nguy hiểm', '<90%', 'red']]
+  },
+  temperature: {
+    zh: [['正常', '36.0–37.2 °C', 'emerald'], ['微發燒', '37.3–37.9', 'amber'], ['發燒', '≥38.0', 'red'], ['高燒', '≥39.0（兒童與長者需警惕）', 'red'], ['體溫過低', '<36.0', 'blue']],
+    en: [['Normal', '36.0–37.2 °C', 'emerald'], ['Low fever', '37.3–37.9', 'amber'], ['Fever', '≥38.0', 'red'], ['High fever', '≥39.0', 'red'], ['Hypothermia', '<36.0', 'blue']],
+    id: [['Normal', '36.0–37.2 °C', 'emerald'], ['Demam ringan', '37.3–37.9', 'amber'], ['Demam', '≥38.0', 'red'], ['Demam tinggi', '≥39.0', 'red'], ['Hipotermia', '<36.0', 'blue']],
+    vi: [['Bình thường', '36.0–37.2 °C', 'emerald'], ['Sốt nhẹ', '37.3–37.9', 'amber'], ['Sốt', '≥38.0', 'red'], ['Sốt cao', '≥39.0', 'red'], ['Hạ thân nhiệt', '<36.0', 'blue']]
+  }
+};
+const dotColor = { emerald: 'bg-emerald-400', amber: 'bg-amber-400', red: 'bg-red-500', blue: 'bg-blue-400' };
+function RangeHint({ rangeKey, lang, title }) {
+  const rows = (RANGE_HINTS[rangeKey] && (RANGE_HINTS[rangeKey][lang] || RANGE_HINTS[rangeKey].zh)) || [];
+  if (!rows.length) return null;
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs">
+      <div className="font-medium text-slate-600 mb-2">{title}</div>
+      <div className="space-y-1">
+        {rows.map(([label, range, color]) => (
+          <div key={label} className="flex items-start gap-2">
+            <span className={'inline-block w-2.5 h-2.5 rounded-full shrink-0 mt-1 ' + dotColor[color]}></span>
+            <div className="flex-1"><span className="font-medium text-slate-700">{label}</span><span className="text-slate-500 ml-2">{range}</span></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VitalForm({ onClose, lang }) {
+  const { dispatch } = useContext(AppCtx);
+  const [type, setType] = useState('bp');
+  const [form, setForm] = useState({ datetime: toLocalInput(now()), systolic: '', diastolic: '', heartRate: '', glucose: '', glucoseType: 'fasting', spo2: '', temperature: '', weight: '', note: '' });
+  const [field, setField] = useState('systolic');
+  const up = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const appendNum = (n) => { const cur = form[field] || ''; if (cur.length >= 4) return; up(field, cur + n); if (field === 'systolic' && (cur + n).length >= 3) setField('diastolic'); else if (field === 'diastolic' && (cur + n).length >= 2) setField('heartRate'); };
+  const submit = () => {
+    const p = { datetime: fromLocalInput(form.datetime), systolic: form.systolic?+form.systolic:null, diastolic: form.diastolic?+form.diastolic:null, heartRate: form.heartRate?+form.heartRate:null, glucose: form.glucose?+form.glucose:null, glucoseType: form.glucose?form.glucoseType:null, spo2: form.spo2?+form.spo2:null, temperature: form.temperature?+form.temperature:null, weight: form.weight?+form.weight:null, note: form.note };
+    if (!p.systolic && !p.glucose && !p.spo2 && !p.temperature && !p.weight) return alert('Please enter at least one value');
+    dispatch({ type: 'ADD_VITAL', payload: p });
+    onClose();
+  };
+  // 即時判定（輸入中）
+  const liveBP = classifyBP(+form.systolic, +form.diastolic);
+  const liveGlu = classifyGlucose(+form.glucose, form.glucoseType);
+  const liveSpo2 = classifySpo2(+form.spo2);
+  const liveTemp = classifyTemp(+form.temperature);
+
+  return (
+    <Modal open={true} onClose={onClose} title={t('addRecord', lang)}>
+      <div className="flex gap-1 mb-4 bg-slate-100 p-1 rounded-lg">
+        {[['bp', t('systolic', lang)+'/'+t('diastolic', lang)], ['glucose', t('glucose', lang)], ['spo2', t('spo2', lang)], ['other', t('temperature', lang) +' / '+ t('weight', lang)]].map(([v, l]) => (
+          <button key={v} onClick={() => { setType(v); if(v==='bp') setField('systolic'); else if(v==='glucose') setField('glucose'); else if(v==='spo2') setField('spo2'); else setField('temperature'); }} className={'flex-1 py-2 rounded text-xs ' + (type===v ? 'bg-white shadow-sm font-medium' : 'text-slate-500')}>{l}</button>
+        ))}
+      </div>
+
+      {type === 'bp' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-2">
+            <FieldBtn label={t('systolic', lang)} value={form.systolic} active={field==='systolic'} onClick={() => setField('systolic')} />
+            <FieldBtn label={t('diastolic', lang)} value={form.diastolic} active={field==='diastolic'} onClick={() => setField('diastolic')} />
+            <FieldBtn label={t('heartRate', lang)} value={form.heartRate} active={field==='heartRate'} onClick={() => setField('heartRate')} />
+          </div>
+          {liveBP && <div className="flex justify-end"><StatusBadge status={liveBP} lang={lang} /></div>}
+          <NumberPad onAppend={appendNum} onBackspace={() => up(field, (form[field] || '').slice(0, -1))} onClear={() => up(field, '')} />
+          <RangeHint rangeKey="bp" lang={lang} title={lang==='zh' ? '血壓參考範圍（mmHg）' : lang==='en' ? 'BP Reference (mmHg)' : lang==='id' ? 'Referensi BP (mmHg)' : 'Tham chiếu HA (mmHg)'} />
+        </div>
+      )}
+      {type === 'glucose' && (
+        <div className="space-y-4">
+          <FieldBtn label={t('glucose', lang) + ' (mg/dL)'} value={form.glucose} active={true} onClick={() => setField('glucose')} />
+          {liveGlu && <div className="flex justify-end"><StatusBadge status={liveGlu} lang={lang} /></div>}
+          <div><div className="text-xs text-slate-500 mb-2">{t('time', lang)}</div>
+            <Chips options={Object.entries(GLU_TYPES).map(([k, v]) => [k, v[lang] || v.zh])} value={form.glucoseType} onChange={v => v && up('glucoseType', v)} />
+          </div>
+          <NumberPad onAppend={appendNum} onBackspace={() => up(field, (form[field] || '').slice(0, -1))} onClear={() => up(field, '')} />
+          <RangeHint rangeKey={form.glucoseType === 'fasting' ? 'glucoseFasting' : 'glucosePost'} lang={lang} title={form.glucoseType === 'fasting' ? (lang==='zh' ? '空腹血糖參考' : 'Fasting glucose') : (lang==='zh' ? '飯後血糖參考' : 'Post-meal glucose')} />
+        </div>
+      )}
+      {type === 'spo2' && (
+        <div className="space-y-4">
+          <FieldBtn label={t('spo2', lang) + ' %'} value={form.spo2} active={true} onClick={() => setField('spo2')} />
+          {liveSpo2 && <div className="flex justify-end"><StatusBadge status={liveSpo2} lang={lang} /></div>}
+          <NumberPad onAppend={appendNum} onBackspace={() => up(field, (form[field] || '').slice(0, -1))} onClear={() => up(field, '')} />
+          <RangeHint rangeKey="spo2" lang={lang} title={lang==='zh' ? '血氧參考範圍' : 'SpO2 Reference'} />
+        </div>
+      )}
+      {type === 'other' && (
+        <div className="space-y-3">
+          <div><Label>{t('temperature', lang)} °C</Label><Input type="number" step="0.1" value={form.temperature} onChange={e => up('temperature', e.target.value)} />{liveTemp && <div className="mt-1"><StatusBadge status={liveTemp} lang={lang} /></div>}</div>
+          <RangeHint rangeKey="temperature" lang={lang} title={lang==='zh' ? '體溫參考範圍' : 'Temperature Reference'} />
+          <div><Label>{t('weight', lang)} kg</Label><Input type="number" step="0.1" value={form.weight} onChange={e => up('weight', e.target.value)} /></div>
+        </div>
+      )}
+
+      <div className="mt-4"><Label>{t('time', lang)}</Label><Input type="datetime-local" value={form.datetime} onChange={e => up('datetime', e.target.value)} /></div>
+      <div className="mt-3"><Label>{t('note', lang)}</Label><VoiceInput value={form.note} onChange={v => up('note', v)} /></div>
+
+      <div className="flex gap-2 mt-5"><Btn onClick={submit} className="flex-1">{t('save', lang)}</Btn><Btn variant="secondary" onClick={onClose}>{t('cancel', lang)}</Btn></div>
+    </Modal>
+  );
+}
+
+// ========== Medications（移除打卡，加入拍藥袋 AI 辨識） ==========
+function Medications({ lang }) {
+  const { state, dispatch } = useContext(AppCtx);
+  const pid = state.currentPatientId;
+  const meds = state.medications[pid] || [];
+  const [editing, setEditing] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const fileRef = useRef(null);
+  const active = meds.filter(m => m.active);
+  const inactive = meds.filter(m => !m.active);
+
+  const handleScan = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!USE_BACKEND && !state.settings.apiKey) { alert('AI 功能目前無法使用'); e.target.value = ''; return; }
+    if (!USE_BACKEND && state.settings.aiProvider === 'anthropic') { alert('拍藥袋辨識請用 Gemini 或 OpenAI'); e.target.value = ''; return; }
+    setScanning(true);
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result.split(',')[1]);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+      const sys = '你是長照用藥 OCR 助手。輸入是台灣醫院 / 藥局的藥袋 / 藥單照片。請辨識後回傳 JSON 陣列，每個元素格式：{"name":"藥名（中文或英文）","dosage":"劑量與服用方式，例如 5mg 一次一顆","schedule":["morning","noon","evening","bedtime"],"withFood":"飯前/飯後/飯中/空腹/不限","note":"備註"}。只回傳純 JSON 陣列，不加 markdown，不加解釋。若無法辨識回傳 [].';
+      const text = await callAIVision(state.settings, sys, '請辨識此藥袋上的所有藥物', base64, file.type);
+      const clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const items = JSON.parse(clean);
+      if (!Array.isArray(items)) throw new Error('AI 回傳非陣列');
+      if (items.length === 0) { alert('未辨識到藥物'); return; }
+      // 開啟批次確認
+      setEditing({ _scanned: items });
+    } catch (err) { alert('辨識失敗: ' + err.message); }
+    finally { setScanning(false); e.target.value = ''; }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <Btn onClick={() => setEditing({})} className="flex-1">{t('addMed', lang)}</Btn>
+        <label className={'px-4 py-2.5 rounded-lg font-medium text-sm ' + (scanning ? 'bg-slate-300 text-slate-500' : 'bg-emerald-600 text-white hover:bg-emerald-700') + ' cursor-pointer'}>
+          {scanning ? t('scanningImage', lang) : t('scanBag', lang)}
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleScan} className="hidden" disabled={scanning} />
+        </label>
+      </div>
+
+      {active.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 font-medium">{t('currentMedsList', lang)}（{active.length}）</div>
+          <div className="divide-y divide-slate-100">
+            {active.map(m => (
+              <button key={m.id} onClick={() => setEditing(m)} className="w-full px-4 py-3 text-left hover:bg-slate-50">
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <div className="font-medium">{m.name}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{m.dosage}</div>
+                    <div className="flex gap-2 mt-1.5">
+                      {m.schedule?.length > 0 && <span className="text-xs px-2 py-0.5 bg-cyan-50 text-cyan-700 rounded">{m.schedule.map(s => slotText(s, lang)).join(' / ')}</span>}
+                      {m.withFood && <span className="text-xs px-2 py-0.5 bg-slate-100 rounded">{m.withFood}</span>}
+                    </div>
+                    {m.note && <div className="text-xs text-slate-400 mt-1">{m.note}</div>}
+                  </div>
+                  <div className="text-slate-400 text-xs">›</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {active.length === 0 && <Empty title={t('noRecords', lang)} />}
+
+      {inactive.length > 0 && (
+        <details className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <summary className="px-4 py-3 border-b border-slate-100 font-medium cursor-pointer">{t('stoppedMeds', lang)}（{inactive.length}）</summary>
+          {inactive.map(m => (
+            <button key={m.id} onClick={() => setEditing(m)} className="w-full px-4 py-3 text-left flex justify-between border-b border-slate-100 last:border-0 hover:bg-slate-50">
+              <div><div className="font-medium text-slate-500 line-through">{m.name}</div><div className="text-xs text-slate-400">{m.dosage}</div></div>
+            </button>
+          ))}
+        </details>
+      )}
+
+      {editing && <MedicationForm med={editing} onClose={() => setEditing(null)} lang={lang} />}
+    </div>
+  );
+}
+
+function MedicationForm({ med, onClose, lang }) {
+  const { dispatch } = useContext(AppCtx);
+  // 支援批次（_scanned 是陣列）
+  const batch = med._scanned;
+  const [batchIdx, setBatchIdx] = useState(0);
+  const initialForm = (() => {
+    if (batch && batch[0]) return { name: '', dosage: '', schedule: ['morning'], withFood: '飯後', note: '', active: true, ...batch[0] };
+    return { name: '', dosage: '', schedule: ['morning'], withFood: '飯後', note: '', active: true, ...med };
+  })();
+  const [form, setForm] = useState(initialForm);
+  const isNew = !med.id;
+  const up = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const saveCurrent = () => {
+    if (!form.name.trim()) return alert('Name required');
+    if (med.id) { dispatch({ type: 'UPDATE_MEDICATION', payload: form }); onClose(); return; }
+    dispatch({ type: 'ADD_MEDICATION', payload: form });
+    if (batch && batchIdx + 1 < batch.length) {
+      const next = batch[batchIdx + 1];
+      setBatchIdx(batchIdx + 1);
+      setForm({ name: '', dosage: '', schedule: ['morning'], withFood: '飯後', note: '', active: true, ...next });
+    } else {
+      onClose();
+    }
+  };
+  const remove = () => { if (confirm('Delete?')) { dispatch({ type: 'DELETE_MEDICATION', payload: form.id }); onClose(); } };
+
+  return (
+    <Modal open={true} onClose={onClose} title={batch ? `辨識結果 ${batchIdx+1}/${batch.length}` : isNew ? t('addMed', lang) : t('editPatient', lang)}>
+      {batch && <div className="mb-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800">AI 辨識結果，請確認後儲存。下一筆會自動帶入。</div>}
+      <div className="space-y-4">
+        <div><Label required>{t('medName', lang)}</Label><VoiceInput value={form.name} onChange={v => up('name', v)} /></div>
+        <div><Label>{t('dosage', lang)}</Label><VoiceInput value={form.dosage} onChange={v => up('dosage', v)} /></div>
+        <div><Label>{t('schedule', lang)}</Label>
+          <Chips options={[['morning', t('schedule', lang)+' · '+slotText('morning', lang)], ['noon', slotText('noon', lang)], ['evening', slotText('evening', lang)], ['bedtime', slotText('bedtime', lang)]]} multi value={form.schedule} onChange={v => up('schedule', v)} />
+        </div>
+        <div><Label>{t('withFood', lang)}</Label>
+          <Chips options={['飯前','飯後','飯中','空腹','不限']} value={form.withFood} onChange={v => v && up('withFood', v)} />
+        </div>
+        <div><Label>{t('note', lang)}</Label><VoiceTextArea rows={2} value={form.note} onChange={v => up('note', v)} /></div>
+        {!isNew && <div className="flex items-center gap-2"><input type="checkbox" id="active" checked={form.active} onChange={e => up('active', e.target.checked)} className="w-5 h-5" /><label htmlFor="active" className="text-sm">{t('stillTaking', lang)}</label></div>}
+        <div className="flex gap-2">
+          <Btn onClick={saveCurrent} className="flex-1">{batch && batchIdx + 1 < batch.length ? t('save', lang) + ' → 下一筆' : (isNew ? t('add', lang) : t('save', lang))}</Btn>
+          {!isNew && <Btn variant="danger" onClick={remove}>{t('delete', lang)}</Btn>}
+          <Btn variant="secondary" onClick={onClose}>{t('cancel', lang)}</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ========== Consultations（含 AI 回診提醒） ==========
+function Consultations({ lang }) {
+  const { state, dispatch } = useContext(AppCtx);
+  const pid = state.currentPatientId;
+  const items = state.consultations[pid] || [];
+  const questions = (state.preVisitQuestions[pid] || []).filter(q => !q.done);
+  const aiReminders = state.aiReminders[pid] || '';
+  const [editing, setEditing] = useState(null);
+  const [viewing, setViewing] = useState(null);
+  const [newQ, setNewQ] = useState('');
+  const [generatingReminders, setGeneratingReminders] = useState(false);
+
+  const generateReminders = async () => {
+    if (!USE_BACKEND && !state.settings.apiKey) return alert('AI 功能目前無法使用');
+    setGeneratingReminders(true);
+    try {
+      const patient = state.patients.find(p => p.id === pid);
+      const recentVitals = (state.vitals[pid] || []).filter(v => daysBetween(v.datetime, now()) <= 30);
+      const meds = (state.medications[pid] || []).filter(m => m.active);
+      const careLogs = (state.careLogs[pid] || []).filter(l => daysBetween(l.datetime, now()) <= 30);
+      const lastConsult = [...items].sort((a,b) => new Date(b.date) - new Date(a.date))[0];
+      const upcoming = items.filter(c => c.nextVisit && new Date(c.nextVisit) >= new Date()).sort((a,b) => new Date(a.nextVisit) - new Date(b.nextVisit))[0];
+
+      const sys = '你是長照照顧專員。請根據以下病人近期資料，產出「下次回診建議確認事項清單」。使用繁體中文，不要編造資料，只針對真正值得問醫生的事。格式：只回傳純 JSON 陣列，每個元素是一行建議問題字串，例如 ["近期血壓連續偏高，請問是否需要調整降壓藥劑量？","最近的用藥是否有引起頭暈（附上日期）？"]。最多 8 條。不要包 markdown。';
+      const vitalsSum = recentVitals.slice(-20).map(v => `${fmtDate(v.datetime)} ${v.systolic?`BP ${v.systolic}/${v.diastolic}`:''}${v.glucose?` 血糖 ${v.glucose}(${v.glucoseType})`:''}${v.spo2?` SpO2 ${v.spo2}`:''}${v.temperature?` 體溫 ${v.temperature}`:''}`).join('\n');
+      const medsSum = meds.map(m => `· ${m.name} ${m.dosage} (${m.schedule?.join('/')})`).join('\n');
+      const careSum = careLogs.slice(-5).map(l => `${fmtDate(l.datetime)} [${l.mode}] ${l.quickTags?.join('、')||''} ${l.content||''}`).join('\n');
+      const user = `病人：${patient?.name}（${patient?.conditions || '無填'}）\n過敏：${patient?.allergies || '無'}\n\n【近 30 天數值】\n${vitalsSum || '無'}\n\n【目前用藥】\n${medsSum || '無'}\n\n【近期病況】\n${careSum || '無'}\n\n【上次看診】\n${lastConsult ? `${fmtDate(lastConsult.date)} ${lastConsult.department} 診斷：${lastConsult.diagnosis || '無'} 醫囑：${lastConsult.plan || '無'}` : '無'}\n\n【下次回診】${upcoming ? `${fmtDate(upcoming.nextVisit)} ${upcoming.hospital} ${upcoming.department}` : '未安排'}`;
+
+      const text = await callAI(state.settings, sys, user);
+      const clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const list = JSON.parse(clean);
+      dispatch({ type: 'SET_AI_REMINDERS', payload: list.join('\n') });
+    } catch (err) { alert('產生失敗: ' + err.message); }
+    finally { setGeneratingReminders(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
+        <div className="font-medium text-amber-900 mb-2">{t('preVisitTitle', lang)}（{questions.length}）</div>
+        <div className="space-y-1.5 mb-3">
+          {questions.slice(0, 8).map(q => (
+            <div key={q.id} className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={q.done} onChange={() => dispatch({ type: 'TOGGLE_QUESTION', payload: q.id })} className="w-4 h-4" />
+              <span className="flex-1 text-slate-700">{q.text}</span>
+              <button onClick={() => dispatch({ type: 'DELETE_QUESTION', payload: q.id })} className="text-slate-300 hover:text-red-500">×</button>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <div className="flex-1"><VoiceInput value={newQ} onChange={setNewQ} placeholder="Add a question..." /></div>
+          <Btn onClick={() => { if(newQ.trim()) { dispatch({ type: 'ADD_QUESTION', payload: { text: newQ.trim() } }); setNewQ(''); }}}>{t('add', lang)}</Btn>
+        </div>
+      </div>
+
+      {/* AI 回診提醒 */}
+      <div className="bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-200 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-medium text-purple-900">{t('aiRemindersTitle', lang)}</div>
+          <Btn variant="secondary" onClick={generateReminders} disabled={generatingReminders}>{generatingReminders ? t('generating', lang) : t('generateAiReminders', lang)}</Btn>
+        </div>
+        {aiReminders ? (
+          <div className="space-y-1.5">
+            {aiReminders.split('\n').filter(Boolean).map((r, i) => (
+              <div key={i} className="flex items-start gap-2 text-sm text-slate-700"><span className="text-purple-500 mt-0.5">·</span><span>{r}</span><button onClick={() => { const text = aiReminders.split('\n').filter(Boolean)[i]; dispatch({ type: 'ADD_QUESTION', payload: { text } }); }} className="ml-auto text-xs text-purple-600 hover:text-purple-800 shrink-0">加入清單</button></div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-slate-500">根據你的數值、用藥、病況自動分析值得確認的事項。</div>
+        )}
+      </div>
+
+      <Btn onClick={() => setEditing({})} className="w-full">{t('addVisit', lang)}</Btn>
+      {items.length === 0 ? <Empty title={t('noVisits', lang)} /> : (
+        <div className="space-y-3">
+          {[...items].sort((a,b) => new Date(b.date) - new Date(a.date)).map(c => (
+            <button key={c.id} onClick={() => setViewing(c)} className="w-full bg-white rounded-xl p-4 border border-slate-200 text-left hover:border-cyan-300 hover:shadow-sm transition">
+              <div className="flex justify-between items-start mb-1"><div className="font-medium">{c.hospital} · {c.department}</div><div className="text-xs text-slate-400">{fmtDate(c.date)}</div></div>
+              {c.doctor && <div className="text-xs text-slate-500 mb-2">{t('doctor', lang)}：{c.doctor}</div>}
+              {c.diagnosis && <div className="text-sm text-slate-700 line-clamp-2 mb-2">{c.diagnosis}</div>}
+              <div className="flex gap-2 text-xs">
+                {c.transcription && <span className="px-2 py-0.5 bg-cyan-50 text-cyan-700 rounded">{t('recordVoice', lang)}</span>}
+                {c.aiSummary && <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded">AI</span>}
+                {c.nextVisit && <span className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded">{fmtDate(c.nextVisit)}</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+      {editing && <ConsultationForm item={editing} onClose={() => setEditing(null)} lang={lang} />}
+      {viewing && <ConsultationView item={viewing} onClose={() => setViewing(null)} onEdit={() => { setEditing(viewing); setViewing(null); }} lang={lang} />}
+    </div>
+  );
+}
+
+function shareToLine(text) {
+  const url = 'https://line.me/R/msg/text/?' + encodeURIComponent(text);
+  window.open(url, '_blank');
+}
+
+function ConsultationView({ item, onClose, onEdit, lang }) {
+  const { dispatch } = useContext(AppCtx);
+  const buildShareText = () => [`【${item.hospital} ${item.department} ${t('consult', lang)}】`, `${t('date', lang)}: ${fmtDate(item.date)}`, item.doctor && `${t('doctor', lang)}: ${item.doctor}`, item.chiefComplaint && `${t('chiefComplaint', lang)}: ${item.chiefComplaint}`, item.diagnosis && `${t('diagnosis', lang)}: ${item.diagnosis}`, item.plan && `${t('plan', lang)}: ${item.plan}`, item.aiSummary && `\n--- AI ${t('aiSummary', lang)} ---\n${item.aiSummary}`, item.nextVisit && `\n${t('nextVisit', lang)}: ${fmtDate(item.nextVisit)}`].filter(Boolean).join('\n');
+  const remove = () => { if (confirm('Delete?')) { dispatch({ type: 'DELETE_CONSULTATION', payload: item.id }); onClose(); } };
+  const Field = ({ label, value }) => <div><div className="text-xs text-slate-500 mb-0.5">{label}</div><div className="text-slate-800 whitespace-pre-wrap">{value}</div></div>;
+  return (
+    <Modal open={true} onClose={onClose} title={`${item.hospital} · ${item.department}`} maxWidth="max-w-2xl">
+      <div className="space-y-4 text-sm">
+        <div className="text-xs text-slate-500">{fmtDate(item.date)} · {t('doctor', lang)}：{item.doctor || t('notSet', lang)}</div>
+        {item.chiefComplaint && <Field label={t('chiefComplaint', lang)} value={item.chiefComplaint} />}
+        {item.diagnosis && <Field label={t('diagnosis', lang)} value={item.diagnosis} />}
+        {item.plan && <Field label={t('plan', lang)} value={item.plan} />}
+        {item.aiSummary && <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3"><div className="font-medium text-emerald-800 mb-1 text-xs">{t('aiSummary', lang)}</div><div className="whitespace-pre-wrap text-slate-800">{item.aiSummary}</div></div>}
+        {item.transcription && <details className="bg-slate-50 border border-slate-200 rounded-lg"><summary className="font-medium p-3 cursor-pointer text-xs">{t('recordVoice', lang)}</summary><div className="p-3 pt-0 whitespace-pre-wrap text-slate-700 text-xs">{item.transcription}</div></details>}
+        {item.nextVisit && <Field label={t('nextVisit', lang)} value={fmtDate(item.nextVisit)} />}
+        {item.notes && <Field label={t('note', lang)} value={item.notes} />}
+        <div className="flex gap-2 pt-3 border-t border-slate-100">
+          <Btn variant="line" onClick={() => shareToLine(buildShareText())} className="flex-1">{t('shareLine', lang)}</Btn>
+          <Btn variant="secondary" onClick={onEdit}>{t('edit', lang)}</Btn>
+          <Btn variant="danger" onClick={remove}>{t('delete', lang)}</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ConsultationForm({ item, onClose, lang }) {
+  const { state, dispatch } = useContext(AppCtx);
+  const isNew = !item.id;
+  const [form, setForm] = useState({ date: now().slice(0,10), hospital: '', department: '', doctor: '', chiefComplaint: '', diagnosis: '', plan: '', nextVisit: '', notes: '', transcription: '', aiSummary: '', ...item });
+  const up = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const submit = (e) => {
+    e.preventDefault();
+    if (!form.hospital.trim() && !form.department.trim()) return alert('At least hospital or dept');
+    dispatch({ type: isNew ? 'ADD_CONSULTATION' : 'UPDATE_CONSULTATION', payload: form });
+    onClose();
+  };
+  const commonDepts = ['心臟內科','腎臟內科','內分泌科','神經內科','骨科','一般內科','家醫科','泌尿科','眼科','耳鼻喉科'];
+  const commonSymptoms = ['頭暈','胸悶','氣喘','咳嗽','發燒','腹痛','失眠','關節痛','疲倦','跌倒'];
+  return (
+    <Modal open={true} onClose={onClose} title={isNew ? t('addVisit', lang) : t('edit', lang)} maxWidth="max-w-2xl">
+      <form onSubmit={submit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>{t('date', lang)}</Label><Input type="date" value={form.date} onChange={e => up('date', e.target.value)} /></div>
+          <div><Label>{t('hospital', lang)}</Label><VoiceInput value={form.hospital} onChange={v => up('hospital', v)} /></div>
+          <div className="col-span-2"><Label>{t('department', lang)}</Label><Chips options={commonDepts} value={form.department} onChange={v => up('department', v || '')} className="mb-2" /><Input value={form.department} onChange={e => up('department', e.target.value)} /></div>
+          <div className="col-span-2"><Label>{t('doctor', lang)}</Label><VoiceInput value={form.doctor} onChange={v => up('doctor', v)} /></div>
+        </div>
+        <VoiceRecorder transcription={form.transcription} onTranscriptChange={tr => up('transcription', tr)} onSummaryGenerated={s => up('aiSummary', s)} patient={state.patients.find(p => p.id === state.currentPatientId)} meds={(state.medications[state.currentPatientId] || []).filter(m => m.active)} settings={state.settings} lang={lang} />
+        {form.aiSummary && <div><Label>{t('aiSummary', lang)}</Label><VoiceTextArea rows={6} value={form.aiSummary} onChange={v => up('aiSummary', v)} /></div>}
+        <div><Label>{t('chiefComplaint', lang)}</Label>
+          <Chips options={commonSymptoms} value={(form.chiefComplaint || '').split('、').filter(Boolean)} multi onChange={v => up('chiefComplaint', v.join('、'))} className="mb-2" />
+          <VoiceTextArea rows={2} value={form.chiefComplaint} onChange={v => up('chiefComplaint', v)} />
+        </div>
+        <div><Label>{t('diagnosis', lang)}</Label><VoiceTextArea rows={2} value={form.diagnosis} onChange={v => up('diagnosis', v)} /></div>
+        <div><Label>{t('plan', lang)}</Label><VoiceTextArea rows={3} value={form.plan} onChange={v => up('plan', v)} /></div>
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>{t('nextVisit', lang)}</Label><Input type="date" value={form.nextVisit} onChange={e => up('nextVisit', e.target.value)} /></div>
+          <div><Label>{t('note', lang)}</Label><VoiceInput value={form.notes} onChange={v => up('notes', v)} /></div>
+        </div>
+        <div className="flex gap-2"><Btn type="submit" className="flex-1">{isNew ? t('create', lang) : t('save', lang)}</Btn><Btn variant="secondary" onClick={onClose}>{t('cancel', lang)}</Btn></div>
+      </form>
+    </Modal>
+  );
+}
+
+function VoiceRecorder({ transcription, onTranscriptChange, onSummaryGenerated, patient, meds, settings, lang }) {
+  const [recording, setRecording] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const recRef = useRef(null);
+  const chunksRef = useRef([]);
+  const streamRef = useRef(null);
+  const timerRef = useRef(null);
+
+  // 產生背景資訊給 AI 辨識時參考（病人病史 + 目前用藥）
+  const buildContext = () => {
+    const parts = [];
+    if (patient?.name) parts.push(`病患：${patient.name}`);
+    if (patient?.conditions) parts.push(`已知疾病：${patient.conditions}`);
+    if (patient?.allergies) parts.push(`過敏：${patient.allergies}`);
+    if (meds && meds.length) {
+      parts.push('目前服用藥物：');
+      meds.forEach(m => parts.push(`- ${m.name}${m.dosage ? ' ' + m.dosage : ''}`));
+    }
+    return parts.join('\n');
+  };
+
+  // 用 MediaRecorder 錄音 → 停止後送後端 Gemini 辨識（支援 iOS、Android、桌面）
+  const startRec = async () => {
+    if (!USE_BACKEND) return alert('醫囑錄音需要平台模式');
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      return alert('此瀏覽器不支援錄音。請改用 Chrome / Safari / Edge');
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 16000, channelCount: 1 } });
+      streamRef.current = stream;
+      const mimeType = pickMimeType();
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        streamRef.current?.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+        const type = mr.mimeType || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type });
+        if (blob.size < 1000) { alert('錄音時間太短，請再試一次'); return; }
+        setTranscribing(true);
+        try {
+          const ext = type.includes('mp4') ? 'mp4' : type.includes('ogg') ? 'ogg' : 'webm';
+          const form = new FormData();
+          form.append('audio', blob, 'visit.' + ext);
+          form.append('mode', 'medical');
+          form.append('context', buildContext());
+          
+          const tok = getToken();
+          const res = await fetch(BACKEND_URL + '/api/ai/transcribe', {
+            method: 'POST',
+            headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
+            body: form
+          });
+          if (!res.ok) throw new Error(await readError(res));
+          const data = await res.json();
+          if (data.text) onTranscriptChange(transcription ? transcription + '\n\n' + data.text : data.text);
+        } catch (e) { alert('辨識失敗：' + (e.message || e).toString().slice(0, 200)); }
+        finally { setTranscribing(false); }
+      };
+      recRef.current = mr;
+      mr.start();
+      setRecording(true);
+      setSeconds(0);
+      timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
+    } catch (e) {
+      alert('無法取用麥克風：' + (e.message || e.name) + '\n\n請確認已允許麥克風權限。');
+    }
+  };
+  const stopRec = () => {
+    setRecording(false);
+    try { recRef.current?.stop(); } catch {}
+    recRef.current = null;
+  };
+
+  const generate = async () => {
+    if (!transcription?.trim()) return alert('沒有逐字稿可摘要');
+    setGenerating(true);
+    try {
+      const sys = '你是長照醫療助理。請根據醫囑錄音逐字稿，產出給家屬的結構化摘要，使用繁體中文、白話、註解專業名詞。格式：【診斷】【醫囑／處置】【下次回診】【家屬待辦】【需再確認】。未提及則寫「錄音未提及」。不編造。';
+      const user = patient ? `被照顧者：${patient.name}${patient.conditions ? `（${patient.conditions}）` : ''}\n\n逐字稿：\n${transcription}` : `逐字稿：\n${transcription}`;
+      const text = await callAI(settings, sys, user);
+      onSummaryGenerated(text);
+    } catch (e) { alert('Failed: ' + e.message); }
+    finally { setGenerating(false); }
+  };
+
+  // 上傳音檔功能（用戶已有 mp3 檔）
+  const handleAudioUpload = async (e) => {
+    const file = e.target.files[0]; e.target.value = '';
+    if (!file) return;
+    if (!USE_BACKEND) return alert('需要平台模式');
+    if (file.size > 20 * 1024 * 1024) return alert('音檔太大（>20MB）');
+    setTranscribing(true);
+    try {
+      const form = new FormData();
+      form.append('audio', file);
+      form.append('mode', 'medical');
+      form.append('context', buildContext());
+      
+      const tok = getToken();
+      const res = await fetch(BACKEND_URL + '/api/ai/transcribe', {
+        method: 'POST',
+        headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
+        body: form
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = await res.json();
+      if (data.text) onTranscriptChange(transcription ? transcription + '\n\n' + data.text : data.text);
+    } catch (err) { alert('辨識失敗：' + (err.message || err).toString().slice(0, 200)); }
+    finally { setTranscribing(false); }
+  };
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="font-medium text-sm">{t('recordVoice', lang)}</div>
+        <div className="flex gap-2">
+          {!recording && !transcribing ? (
+            <>
+              <button type="button" onClick={startRec} className="px-4 py-2 bg-red-500 text-white rounded-lg font-medium text-sm hover:bg-red-600">{t('startRec', lang)}</button>
+              <label className="px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg font-medium text-sm hover:bg-slate-50 cursor-pointer">
+                {t('uploadAudio', lang)}
+                <input type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" />
+              </label>
+            </>
+          ) : recording ? (
+            <button type="button" onClick={stopRec} className="px-4 py-2 recording text-white rounded-lg font-medium text-sm">{t('stopRec', lang)}（{Math.floor(seconds/60)}:{String(seconds%60).padStart(2,'0')}）</button>
+          ) : (
+            <span className="px-4 py-2 bg-slate-200 text-slate-600 rounded-lg text-sm">Gemini 辨識中...</span>
+          )}
+        </div>
+      </div>
+      {transcribing && <div className="text-xs text-slate-500">正在用 Gemini 辨識，依長度可能需要 10–60 秒...</div>}
+      <VoiceTextArea rows={6} value={transcription} onChange={onTranscriptChange} />
+      <Btn type="button" onClick={generate} disabled={generating || !transcription?.trim()} className="w-full">{generating ? t('generating', lang) : t('generateSummary', lang)}</Btn>
+    </div>
+  );
+}
+
+// ========== CareLogs ==========
+function CareLogs({ lang }) {
+  const { state, dispatch } = useContext(AppCtx);
+  const pid = state.currentPatientId;
+  const logs = state.careLogs[pid] || [];
+  const [showForm, setShowForm] = useState(false);
+  const [viewing, setViewing] = useState(null);
+  const shareLog = (l) => {
+    const patient = state.patients.find(p => p.id === pid);
+    const lines = [];
+    lines.push(`【${t(MODES[l.mode], lang)}紀錄】`);
+    if (patient?.name) lines.push(`對象：${patient.name}`);
+    lines.push(`時間：${fmtDateTime(l.datetime)}`);
+    if (l.authorName) lines.push(`紀錄人：${l.authorName}`);
+    if (l.quickTags?.length) {
+      lines.push('');
+      lines.push('― 觀察狀態 ―');
+      l.quickTags.forEach(tag => lines.push(`・${tag}`));
+    }
+    if (l.content) {
+      lines.push('');
+      lines.push('― 補充描述 ―');
+      lines.push(l.content);
+    }
+    if (l.followUp) {
+      lines.push('');
+      lines.push('― 接手請注意 ―');
+      lines.push(l.followUp);
+    }
+    lines.push('');
+    lines.push('───────────');
+    lines.push('來自 醫囑管理工具');
+    shareToLine(lines.join('\n'));
+  };
+  return (
+    <div className="space-y-4">
+      <Btn onClick={() => setShowForm(true)} className="w-full">{t('addCareLog', lang)}</Btn>
+      {logs.length === 0 ? <Empty title={t('noCareLogs', lang)} /> : (
+        <div className="space-y-3">
+          {[...logs].sort((a,b) => new Date(b.datetime) - new Date(a.datetime)).map(l => (
+            <div key={l.id} className="bg-white rounded-xl p-4 border border-slate-200">
+              <div className="flex justify-between items-start mb-2">
+                <div className="flex items-center gap-2"><span className="px-2 py-1 rounded-lg text-xs bg-slate-100">{t(MODES[l.mode], lang)}</span><span className="text-xs text-slate-400">{fmtDateTime(l.datetime)}</span></div>
+                <div className="flex gap-1">
+                  <button onClick={() => shareLog(l)} className="text-[#06C755] hover:text-[#05B34A] text-xs px-2 py-1 border border-[#06C755] rounded">LINE</button>
+                  <button onClick={() => { if(confirm('Delete?')) dispatch({ type: 'DELETE_CARELOG', payload: l.id }); }} className="text-slate-300 hover:text-red-500 text-lg">×</button>
+                </div>
+              </div>
+              {l.authorName && <div className="text-xs text-slate-500 mb-2">by {l.authorName}</div>}
+              {l.quickTags && l.quickTags.length > 0 && <div className="flex flex-wrap gap-1 mb-2">{l.quickTags.map((t, i) => <span key={i} className="px-2 py-0.5 bg-slate-100 rounded text-xs">{t}</span>)}</div>}
+              {l.content && <div className="text-sm text-slate-800 whitespace-pre-wrap">{l.content}</div>}
+              {l.followUp && <div className="mt-2 pt-2 border-t border-slate-100 text-sm"><span className="text-amber-700 font-medium">{t('followUp', lang)}：</span>{l.followUp}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      {showForm && <CareLogForm onClose={() => setShowForm(false)} lang={lang} />}
+    </div>
+  );
+}
+function CareLogForm({ onClose, lang }) {
+  const { dispatch } = useContext(AppCtx);
+  const [form, setForm] = useState({ datetime: toLocalInput(now()), mode: 'daily', content: '', followUp: '', authorName: '', quickTags: [] });
+  const up = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const submit = () => {
+    if (!form.content.trim() && (!form.quickTags || form.quickTags.length === 0)) return alert('Please fill something');
+    dispatch({ type: 'ADD_CARELOG', payload: { ...form, datetime: fromLocalInput(form.datetime) } });
+    onClose();
+  };
+  const quickOptionsBy = {
+    hospital: ['精神好','精神差','食慾正常','食慾差','有發燒','無發燒','排便正常','排便不順','傷口乾淨','傷口紅腫','能下床','臥床'],
+    unwell: ['頭暈','頭痛','胸悶','喘','咳嗽','發燒','腹痛','拉肚子','嘔吐','跌倒','意識清楚','意識混亂'],
+    daily: ['精神好','精神差','食慾正常','食慾差','有運動','沒運動','睡眠好','睡眠差','情緒穩定','情緒低落','有外出']
+  };
+  return (
+    <Modal open={true} onClose={onClose} title={t('addCareLog', lang)} maxWidth="max-w-xl">
+      <div className="space-y-4">
+        <div><Label>{t('context', lang)}</Label>
+          <Chips options={Object.entries(MODES).map(([k, vk]) => [k, t(vk, lang)])} value={form.mode} onChange={v => v && up('mode', v)} />
+        </div>
+        <div><Label>{t('time', lang)}</Label><Input type="datetime-local" value={form.datetime} onChange={e => up('datetime', e.target.value)} /></div>
+        <div><Label>{t('author', lang)}</Label><VoiceInput value={form.authorName} onChange={v => up('authorName', v)} /></div>
+        <div><Label>{t('quickTag', lang)}</Label><Chips options={quickOptionsBy[form.mode]} multi value={form.quickTags} onChange={v => up('quickTags', v)} /></div>
+        <div><Label>{t('careLogContent', lang)}</Label><VoiceTextArea rows={4} value={form.content} onChange={v => up('content', v)} /></div>
+        <div><Label>{t('followUp', lang)}</Label><VoiceTextArea rows={2} value={form.followUp} onChange={v => up('followUp', v)} /></div>
+        <div className="flex gap-2"><Btn onClick={submit} className="flex-1">{t('save', lang)}</Btn><Btn variant="secondary" onClick={onClose}>{t('cancel', lang)}</Btn></div>
+      </div>
+    </Modal>
+  );
+}
+
+// ========== ERCard 新版（7 天統計） ==========
+function ERCard({ lang }) {
+  const { state } = useContext(AppCtx);
+  const pid = state.currentPatientId;
+  const p = state.patients.find(x => x.id === pid);
+  const meds = (state.medications[pid] || []).filter(m => m.active);
+  const vitals = state.vitals[pid] || [];
+  if (!p) return <Empty title={t('addPatient', lang)} />;
+
+  const stats = useMemo(() => {
+    const cutoff = Date.now() - 7 * 86400000;
+    const recent = vitals.filter(v => new Date(v.datetime).getTime() >= cutoff);
+    const bps = recent.filter(v => v.systolic);
+    const gls = recent.filter(v => v.glucose);
+    const sps = recent.filter(v => v.spo2);
+    const temps = recent.filter(v => v.temperature);
+    const avg = arr => Math.round(arr.reduce((s,x)=>s+x,0)/arr.length);
+    const bpStats = (() => {
+      if (!bps.length) return null;
+      const maxSys = Math.max(...bps.map(v => v.systolic));
+      const rowMax = bps.find(v => v.systolic === maxSys);
+      return {
+        count: bps.length,
+        avgSys: avg(bps.map(v => v.systolic)),
+        avgDia: avg(bps.map(v => v.diastolic)),
+        maxSys,
+        maxDia: rowMax?.diastolic || 0,
+        abn: bps.filter(v => { const s = classifyBP(v.systolic, v.diastolic); return s && (s.level === 'high' || s.level === 'crisis'); }).length
+      };
+    })();
+    const glStats = gls.length ? {
+      count: gls.length,
+      avg: avg(gls.map(v => v.glucose)),
+      max: Math.max(...gls.map(v => v.glucose)),
+      abn: gls.filter(v => { const s = classifyGlucose(v.glucose, v.glucoseType); return s && (s.level === 'high'); }).length
+    } : null;
+    const spStats = sps.length ? { count: sps.length, avg: avg(sps.map(v => v.spo2)), min: Math.min(...sps.map(v => v.spo2)), abn: sps.filter(v => v.spo2 < 95).length } : null;
+    const tStats = temps.length ? { count: temps.length, max: Math.max(...temps.map(v => v.temperature)), abn: temps.filter(v => v.temperature >= 37.3).length } : null;
+    return { bpStats, glStats, spStats, tStats };
+  }, [vitals]);
+
+  const age = p.birthDate ? new Date().getFullYear() - new Date(p.birthDate).getFullYear() : '';
+  const Section = ({ title, children, danger }) => (
+    <div className={'mb-3 p-3 rounded-lg ' + (danger ? 'bg-red-50 border border-red-200' : 'bg-slate-50')}>
+      <div className={'text-xs font-semibold mb-1 ' + (danger ? 'text-red-700' : 'text-slate-500')}>{title}</div>
+      <div className="text-slate-800">{children}</div>
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      <Btn onClick={() => window.print()} className="w-full">{t('printCard', lang)}</Btn>
+      <div className="bg-white rounded-xl border-2 border-red-500 p-5 print:border-0 print:shadow-none" id="er-card">
+        <div className="border-b-2 border-red-500 pb-3 mb-4">
+          <div className="text-2xl font-bold">{t('medicalCard', lang)}</div>
+          <div className="text-xs text-slate-500">{fmtDate(now())}</div>
+        </div>
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div><div className="text-xs text-slate-500">{t('name', lang)}</div><div className="font-bold text-lg">{p.name}</div></div>
+          <div><div className="text-xs text-slate-500">{t('birthDate', lang)}</div><div className="font-medium">{age ? `${age}` : '—'} · {p.gender}</div></div>
+          <div><div className="text-xs text-slate-500">{t('bloodType', lang)}</div><div className="font-medium">{p.bloodType || '—'}</div></div>
+          <div><div className="text-xs text-slate-500">{t('height', lang)} / {t('weight', lang)}</div><div className="font-medium">{p.height || '?'} / {p.weight || '?'}</div></div>
+        </div>
+        {p.conditions && <Section title={t('conditions', lang)}>{p.conditions}</Section>}
+        {p.allergies && <Section title={t('allergies', lang)} danger>{p.allergies}</Section>}
+        {p.medicalHistory && <Section title={t('medicalHistory', lang)}>{p.medicalHistory}</Section>}
+
+        <Section title={t('currentMeds', lang)}>
+          {meds.length === 0 ? <span className="text-slate-400 text-sm">{t('none', lang)}</span> : meds.map(m => (
+            <div key={m.id} className="text-sm">· <strong>{m.name}</strong>{m.dosage && ` — ${m.dosage}`} {m.schedule?.length > 0 && `（${m.schedule.map(s => slotText(s, lang)).join('/')}）`} {m.withFood}</div>
+          ))}
+        </Section>
+
+        {/* 新版：7 天統計 */}
+        {(stats.bpStats || stats.glStats || stats.spStats || stats.tStats) && (
+          <Section title={t('last7DaysVitals', lang)}>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {stats.bpStats && (
+                <div className="bg-white p-2 rounded border border-slate-200">
+                  <div className="text-slate-500 mb-0.5">{t('systolic', lang)}/{t('diastolic', lang)}</div>
+                  <div className="text-sm font-semibold">{t('avgBP', lang)}：{stats.bpStats.avgSys}/{stats.bpStats.avgDia}</div>
+                  <div className="text-xs">{t('highestBP', lang)}：{stats.bpStats.maxSys}</div>
+                  {stats.bpStats.abn > 0 && <div className="text-red-600 mt-1">{t('abnormalCount', lang)} {stats.bpStats.abn}/{stats.bpStats.count}</div>}
+                </div>
+              )}
+              {stats.glStats && (
+                <div className="bg-white p-2 rounded border border-slate-200">
+                  <div className="text-slate-500 mb-0.5">{t('glucose', lang)}</div>
+                  <div className="text-sm font-semibold">平均 {stats.glStats.avg}</div>
+                  <div className="text-xs">最高 {stats.glStats.max}</div>
+                  {stats.glStats.abn > 0 && <div className="text-red-600 mt-1">{t('abnormalCount', lang)} {stats.glStats.abn}/{stats.glStats.count}</div>}
+                </div>
+              )}
+              {stats.spStats && (
+                <div className="bg-white p-2 rounded border border-slate-200">
+                  <div className="text-slate-500 mb-0.5">{t('spo2', lang)}</div>
+                  <div className="text-sm font-semibold">平均 {stats.spStats.avg}%</div>
+                  <div className="text-xs">最低 {stats.spStats.min}%</div>
+                  {stats.spStats.abn > 0 && <div className="text-red-600 mt-1">{t('abnormalCount', lang)} {stats.spStats.abn}</div>}
+                </div>
+              )}
+              {stats.tStats && (
+                <div className="bg-white p-2 rounded border border-slate-200">
+                  <div className="text-slate-500 mb-0.5">{t('temperature', lang)}</div>
+                  <div className="text-sm font-semibold">最高 {stats.tStats.max}°C</div>
+                  {stats.tStats.abn > 0 && <div className="text-red-600 mt-1">{t('abnormalCount', lang)} {stats.tStats.abn}</div>}
+                </div>
+              )}
+            </div>
+          </Section>
+        )}
+      </div>
+      <style>{`@media print { body * { visibility: hidden; } #er-card, #er-card * { visibility: visible; } #er-card { position: absolute; left: 0; top: 0; width: 100%; } }`}</style>
+    </div>
+  );
+}
+
+// ========== Settings ==========
+function Settings({ profile, onLogout, lang, onLangChange }) {
+  const { state, dispatch } = useContext(AppCtx);
+  const [form, setForm] = useState(state.settings);
+  const [showKey, setShowKey] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const save = () => { dispatch({ type: 'UPDATE_SETTINGS', payload: form }); alert('Saved'); };
+  const testAPI = async () => {
+    if (!form.apiKey) { setTestResult({ ok: false, msg: '請先貼入 API Key' }); return; }
+    setTesting(true); setTestResult(null);
+    try {
+      const reply = await callAI(form, '你是測試助手。請用繁體中文回覆「連線成功」四個字，不要加其他內容。', '測試');
+      setTestResult({ ok: true, msg: `✓ 連線成功！回覆：「${reply.trim().slice(0, 30)}」` });
+    } catch (e) {
+      setTestResult({ ok: false, msg: '✗ 失敗：' + (e.message || e).toString().slice(0, 200) });
+    } finally { setTesting(false); }
+  };
+  const exportAll = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `medcare_${profile.name}_${fmtDate(now()).replace(/\//g,'-')}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+  const importAll = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = (ev) => { try { const data = JSON.parse(ev.target.result); if (!data.patients) throw new Error('Bad format'); if (confirm('Overwrite?')) { dispatch({ type: 'SET_STATE', payload: data }); alert('Done'); } } catch(err) { alert('Failed: ' + err.message); } };
+    r.readAsText(f); e.target.value = '';
+  };
+  const providers = {
+    gemini: { name: 'Google Gemini', tag: 'Free tier', help: 'Get key from aistudio.google.com/apikey. Supports image (藥袋辨識).', models: [['gemini-1.5-flash','Gemini 1.5 Flash'],['gemini-2.0-flash-exp','Gemini 2.0 Flash']] },
+    openai: { name: 'OpenAI', tag: 'Paid', help: 'platform.openai.com/api-keys. Supports image.', models: [['gpt-4o-mini','GPT-4o mini'],['gpt-4o','GPT-4o']] },
+    anthropic: { name: 'Claude', tag: 'Paid', help: 'console.anthropic.com. 不支援瀏覽器端圖片辨識.', models: [['claude-haiku-4-5','Haiku 4.5'],['claude-sonnet-4-5','Sonnet 4.5']] }
+  };
+  const p = providers[form.aiProvider] || providers.gemini;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl p-4 border border-slate-200">
+        <div className="font-medium mb-3">{profile.name}{profile.email ? ` · ${profile.email}` : ''}</div>
+        <Btn variant="secondary" onClick={onLogout}>Logout</Btn>
+      </div>
+
+      <div className="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
+        <div className="font-medium">{t('language', lang)}</div>
+        <Chips options={Object.entries(LANGS).map(([k, v]) => [k, `${v.flag} ${v.name}`])} value={lang} onChange={v => v && onLangChange(v)} />
+      </div>
+
+      {USE_BACKEND && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-sm text-emerald-800">
+          <div className="font-semibold mb-1">平台模式</div>
+          已連接愛長照雲端後端，AI 服務由平台提供，你不需自備 API Key。
+        </div>
+      )}
+
+      <div className={'bg-white rounded-xl p-4 border border-slate-200 space-y-3 ' + (USE_BACKEND ? 'opacity-50 pointer-events-none' : '')}>
+        <div className="font-medium">AI（個人 API Key 模式）{USE_BACKEND && <span className="text-xs text-slate-500 ml-2">平台模式下不需設定</span>}</div>
+        <div><Label>{t('aiProvider', lang)}</Label>
+          <Chips options={[['gemini','Gemini'],['openai','OpenAI'],['anthropic','Claude']]} value={form.aiProvider} onChange={v => v && setForm(f => ({ ...f, aiProvider: v, model: '' }))} />
+          <div className="text-xs mt-2 p-2 bg-slate-50 rounded text-slate-600"><span className="inline-block px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs mr-2">{p.tag}</span>{p.help}</div>
+        </div>
+        <div><Label>{t('model', lang)}</Label>
+          <Select value={form.model || p.models[0][0]} onChange={e => setForm(f => ({ ...f, model: e.target.value }))}>{p.models.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select>
+        </div>
+        <div><Label>{t('apiKey', lang)}</Label>
+          <div className="relative">
+            <Input type={showKey ? 'text' : 'password'} value={form.apiKey || ''} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))} />
+            <button type="button" onClick={() => setShowKey(!showKey)} className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">{showKey ? 'hide' : 'show'}</button>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Btn onClick={save} className="flex-1">{t('save', lang)}</Btn>
+          <Btn variant="secondary" onClick={testAPI} disabled={testing}>{testing ? '測試中...' : '測試連線'}</Btn>
+        </div>
+        {testResult && (
+          <div className={'text-xs p-2 rounded border ' + (testResult.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-700')}>{testResult.msg}</div>
+        )}
+        <details className="bg-slate-50 border border-slate-200 rounded-lg">
+          <summary className="px-3 py-2 text-xs text-slate-600 cursor-pointer">如何取得 API Key？</summary>
+          <div className="p-3 pt-0 text-xs text-slate-600 space-y-2">
+            <div><strong>Gemini（推薦，有免費額度）</strong><br/>→ 打開 <a href="https://aistudio.google.com/apikey" target="_blank" className="text-cyan-600 underline">aistudio.google.com/apikey</a><br/>→ 用 Google 帳號登入 → 點「Create API key」→ 選擇 Google Cloud 專案（或建立新的）→ 複製 `AIza...` 開頭的金鑰</div>
+            <div><strong>OpenAI</strong><br/>→ <a href="https://platform.openai.com/api-keys" target="_blank" className="text-cyan-600 underline">platform.openai.com/api-keys</a> → 需先儲值 → 產生 `sk-...` 金鑰</div>
+            <div><strong>Claude</strong><br/>→ <a href="https://console.anthropic.com/settings/keys" target="_blank" className="text-cyan-600 underline">console.anthropic.com</a> → 需儲值 → 產生 `sk-ant-...` 金鑰</div>
+          </div>
+        </details>
+      </div>
+
+      <div className="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
+        <div className="font-medium">LINE 分享</div>
+        <div className="text-xs text-slate-600 leading-relaxed">
+          看診紀錄與病況紀錄的「分享到 LINE」按鈕會開啟 LINE 選擇聯絡人或群組傳送。
+          目前使用 LINE URL Scheme（無需後端）。<br/>
+          <strong>測試方法：</strong>隨便建一筆看診紀錄，打開詳細檢視，點底部綠色「分享到 LINE」按鈕。
+        </div>
+        <Btn variant="line" onClick={() => {
+          const msg = `【醫囑管理工具】測試訊息 - ${fmtDateTime(now())}\n\n這是從醫囑管理工具分享過來的測試訊息，用來確認 LINE 分享功能可以正常運作。`;
+          const url = 'https://line.me/R/msg/text/?' + encodeURIComponent(msg);
+          window.open(url, '_blank');
+        }} className="w-full">送出測試訊息到 LINE</Btn>
+      </div>
+
+      <div className="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
+        <div className="font-medium">Backup</div>
+        <div className="flex gap-2">
+          <Btn onClick={exportAll} className="flex-1">Export</Btn>
+          <label className="flex-1"><input type="file" accept=".json" onChange={importAll} className="hidden" /><div className="px-4 py-2.5 rounded-lg font-medium text-sm bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 text-center cursor-pointer">Import</div></label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== Caregiver Mode（保留但簡化，整站已多語） ==========
+function CaregiverMode({ profile, onExit, lang }) {
+  const [view, setView] = useState('home');
+  const [state, dispatch] = useReducer(reducer, null, () => loadState(profile.id));
+  useEffect(() => { saveState(profile.id, state); }, [state]);
+  const patient = state.patients.find(p => p.id === state.currentPatientId) || state.patients[0];
+
+  if (!patient) return (
+    <div className="min-h-screen flex items-center justify-center p-6"><div className="text-center"><div className="text-slate-600 mb-4">{t('addPatient', lang)}</div><Btn onClick={onExit}>{t('switchToFamily', lang)}</Btn></div></div>
+  );
+
+  return (
+    <AppCtx.Provider value={{ state, dispatch }}>
+      <div className="min-h-screen bg-slate-50">
+        <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
+          <div><div className="font-bold">{t('caregiverModeTitle', lang)}</div><div className="text-xs text-slate-500">{patient.name}</div></div>
+          <button onClick={onExit} className="text-sm text-slate-500">{t('switchToFamily', lang)}</button>
+        </header>
+        <main className="max-w-xl mx-auto p-4">
+          {view === 'home' && (
+            <div className="space-y-4 pt-4">
+              <BigButton label={t('vitals', lang)} color="cyan" onClick={() => setView('bp')} />
+              <BigButton label={t('meds', lang)} color="emerald" onClick={() => setView('meds')} />
+            </div>
+          )}
+          {view === 'bp' && <CaregiverBP lang={lang} onBack={() => setView('home')} />}
+          {view === 'meds' && <CaregiverMeds lang={lang} onBack={() => setView('home')} />}
+        </main>
+      </div>
+    </AppCtx.Provider>
+  );
+}
+const BigButton = ({ label, color, onClick }) => {
+  const colors = { cyan: 'bg-cyan-600 hover:bg-cyan-700', emerald: 'bg-emerald-600 hover:bg-emerald-700', red: 'bg-red-500 hover:bg-red-600' };
+  return <button onClick={onClick} className={'w-full p-8 rounded-2xl text-white text-2xl font-semibold shadow-md ' + colors[color]}>{label}</button>;
+};
+function CaregiverBP({ lang, onBack }) {
+  const { dispatch } = useContext(AppCtx);
+  const [form, setForm] = useState({ systolic: '', diastolic: '', glucose: '', glucoseType: 'fasting' });
+  const [field, setField] = useState('systolic');
+  const up = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const save = () => {
+    if (!form.systolic && !form.glucose) return alert('Please enter');
+    dispatch({ type: 'ADD_VITAL', payload: { datetime: now(), systolic: form.systolic?+form.systolic:null, diastolic: form.diastolic?+form.diastolic:null, glucose: form.glucose?+form.glucose:null, glucoseType: form.glucose?form.glucoseType:null } });
+    alert('✓'); onBack();
+  };
+  return (
+    <div className="space-y-4 pt-4">
+      <div className="grid grid-cols-2 gap-2">
+        <FieldBtn label={t('systolic', lang)} value={form.systolic} active={field==='systolic'} onClick={() => setField('systolic')} />
+        <FieldBtn label={t('diastolic', lang)} value={form.diastolic} active={field==='diastolic'} onClick={() => setField('diastolic')} />
+        <div className="col-span-2"><FieldBtn label={t('glucose', lang)} value={form.glucose} active={field==='glucose'} onClick={() => setField('glucose')} /></div>
+      </div>
+      {field === 'glucose' && <Chips options={Object.entries(GLU_TYPES).map(([k, v]) => [k, v[lang] || v.zh])} value={form.glucoseType} onChange={v => v && up('glucoseType', v)} />}
+      <NumberPad onAppend={n => { const cur = form[field] || ''; if (cur.length >= 4) return; up(field, cur + n); }} onBackspace={() => up(field, (form[field] || '').slice(0, -1))} onClear={() => up(field, '')} />
+      <div className="flex gap-2 pt-2"><button onClick={onBack} className="flex-1 py-3 bg-white border border-slate-300 rounded-xl font-medium">{t('back', lang)}</button><button onClick={save} className="flex-1 py-3 bg-cyan-600 text-white rounded-xl font-semibold">{t('save', lang)}</button></div>
+    </div>
+  );
+}
+function CaregiverMeds({ lang, onBack }) {
+  const { state } = useContext(AppCtx);
+  const meds = (state.medications[state.currentPatientId] || []).filter(m => m.active);
+  return (
+    <div className="space-y-3 pt-4">
+      {meds.length === 0 && <div className="text-center py-8 text-slate-400">—</div>}
+      {meds.map(m => (
+        <div key={m.id} className="bg-white p-4 rounded-2xl border border-slate-200">
+          <div className="font-semibold mb-1">{m.name}</div>
+          <div className="text-xs text-slate-500 mb-2">{m.dosage} · {m.schedule?.map(s => slotText(s, lang)).join('/')} · {m.withFood}</div>
+        </div>
+      ))}
+      <button onClick={onBack} className="w-full py-3 bg-white border border-slate-300 rounded-xl font-medium mt-4">{t('back', lang)}</button>
+    </div>
+  );
+}
+
+// ========== MainApp ==========
+function MainApp({ profile, onLogout, lang, onLangChange }) {
+  const [state, dispatch] = useReducer(reducer, null, () => loadState(profile.id));
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle | loading | saving | synced | error
+  const [syncError, setSyncError] = useState('');
+  const firstLoadRef = useRef(true);
+  const saveTimerRef = useRef(null);
+
+  // 寫入 localStorage（無論如何都存本地作為快取）
+  useEffect(() => { saveState(profile.id, state); }, [state]);
+
+  // 進入時：從雲端拉資料覆蓋本地
+  useEffect(() => {
+    if (!USE_BACKEND) { firstLoadRef.current = false; return; }
+    setSyncStatus('loading');
+    apiFetch('/api/data')
+      .then(r => r.json())
+      .then(d => {
+        if (d.data && d.data.patients) {
+          // 雲端有資料 → 覆蓋本地
+          dispatch({ type: 'SET_STATE', payload: d.data });
+          setSyncStatus('synced');
+        } else {
+          // 雲端沒資料 → 把本地資料推上雲端
+          setSyncStatus('synced');
+        }
+      })
+      .catch(e => { setSyncStatus('error'); setSyncError(e.message || String(e)); })
+      .finally(() => { setTimeout(() => { firstLoadRef.current = false; }, 500); });
+  }, []);
+
+  // 有變動時：debounce 3 秒後推到雲端
+  useEffect(() => {
+    if (!USE_BACKEND) return;
+    if (firstLoadRef.current) return; // 剛載入那次不要立刻存
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    setSyncStatus('saving');
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await apiFetch('/api/data', { method: 'PUT', body: JSON.stringify({ data: state }) });
+        if (!res.ok) throw new Error(await readError(res));
+        setSyncStatus('synced');
+      } catch (e) {
+        setSyncStatus('error');
+        setSyncError((e.message || String(e)).slice(0, 200));
+      }
+    }, 3000);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [state]);
+
+  useEffect(() => { if (state.settings.lang && state.settings.lang !== lang) onLangChange(state.settings.lang); }, []);
+  const [tab, setTab] = useState('dashboard');
+  const [showPatientEditor, setShowPatientEditor] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const hasPatient = !!state.currentPatientId;
+  const tabs = [['dashboard', t('dashboard', lang)], ['vitals', t('vitals', lang)], ['meds', t('meds', lang)], ['consult', t('consult', lang)], ['care', t('care', lang)], ['er', t('erCard', lang)]];
+  return (
+    <AppCtx.Provider value={{ state, dispatch }}>
+      <div className="min-h-screen pb-24">
+        <header className="bg-white/80 backdrop-blur-md border-b border-slate-200/70 sticky top-0 z-30 print:hidden">
+          <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+            <button onClick={() => setShowAbout(true)} className="flex items-center gap-2 min-w-0 hover:opacity-80" title="查看介紹頁">
+              <div className="w-9 h-9 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-sm shrink-0 shadow-sm">醫</div>
+              <div className="min-w-0 text-left">
+                <div className="font-bold text-sm truncate">{t('appName', lang)}</div>
+              </div>
+            </button>
+            <div className="flex items-center gap-2">
+              <SyncIndicator status={syncStatus} error={syncError} />
+              <LangSwitcher value={lang} onChange={(v) => { onLangChange(v); dispatch({ type: 'UPDATE_SETTINGS', payload: { lang: v } }); }} compact />
+              <PatientSwitcher lang={lang} />
+              <div className="relative">
+                <button onClick={() => setShowMenu(!showMenu)} className="flex items-center justify-center w-9 h-9 rounded-full bg-cyan-100 hover:bg-cyan-200 overflow-hidden" title={profile.name}>
+                  {profile.pic ? <img src={profile.pic} alt="" className="w-full h-full object-cover" /> : <span className="text-cyan-700 font-semibold text-sm">{profile.name?.[0] || '?'}</span>}
+                </button>
+                {showMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-50 min-w-[180px] py-1">
+                      <div className="px-3 py-2 border-b border-slate-100">
+                        <div className="font-medium text-sm truncate">{profile.name}</div>
+                        <div className="text-xs text-slate-500 truncate">{profile.type === 'line' ? 'LINE 帳號' : profile.email || profile.type}</div>
+                      </div>
+                      <button onClick={() => { setShowAbout(true); setShowMenu(false); }} className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">查看介紹頁</button>
+                      <button onClick={() => { setShowMenu(false); onLogout(); }} className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 border-t border-slate-100">登出</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </header>
+        {showAbout && <AboutOverlay lang={lang} onClose={() => setShowAbout(false)} />}
+        <main className="max-w-3xl mx-auto px-4 pt-4">
+          {!hasPatient ? (
+            <div className="py-12 text-center">
+              <div className="bg-white/80 backdrop-blur rounded-2xl p-8 border border-slate-200 max-w-md mx-auto">
+                <h2 className="text-xl font-bold text-slate-900 mb-2">歡迎，{profile.name}</h2>
+                <p className="text-sm text-slate-600 mb-6">開始建立你要照顧的對象，即可記錄數值、用藥、看診等資訊。</p>
+                <Btn onClick={() => setShowPatientEditor(true)} className="w-full">＋ 新增被照顧者</Btn>
+              </div>
+            </div>
+          ) : (
+            <>
+              {tab === 'dashboard' && <Dashboard lang={lang} />}
+              {tab === 'vitals' && <Vitals lang={lang} />}
+              {tab === 'meds' && <Medications lang={lang} />}
+              {tab === 'consult' && <Consultations lang={lang} />}
+              {tab === 'care' && <CareLogs lang={lang} />}
+              {tab === 'er' && <ERCard lang={lang} />}
+            </>
+          )}
+        </main>
+        {hasPatient && (
+          <nav className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200/70 print:hidden z-30">
+            <div className="max-w-3xl mx-auto flex">
+              {tabs.map(([id, label]) => (
+                <button key={id} onClick={() => setTab(id)} className={'flex-1 py-3.5 text-center border-t-2 text-sm whitespace-nowrap transition ' + (tab === id ? 'tab-active font-semibold' : 'border-transparent text-slate-500 hover:text-slate-700')}>{label}</button>
+              ))}
+            </div>
+          </nav>
+        )}
+        {showPatientEditor && <PatientEditor patient={{}} onClose={() => setShowPatientEditor(false)} lang={lang} />}
+      </div>
+    </AppCtx.Provider>
+  );
+}
+
+function PatientSwitcher({ lang }) {
+  const { state, dispatch } = useContext(AppCtx);
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const current = state.patients.find(p => p.id === state.currentPatientId);
+  if (!current) return null;
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className="flex items-center gap-2 bg-slate-100 rounded-lg px-3 py-1.5 hover:bg-slate-200">
+        <div className="w-7 h-7 rounded-full bg-cyan-500 text-white flex items-center justify-center font-semibold text-sm">{current.name[0]}</div>
+        <div className="text-sm font-medium">{current.name}</div>
+        <span className="text-slate-400 text-xs">▼</span>
+      </button>
+      <Modal open={open} onClose={() => setOpen(false)} title={t('addPatient', lang)}>
+        <div className="space-y-2 mb-4">
+          {state.patients.map(p => (
+            <div key={p.id} className={'flex items-center gap-2 p-3 rounded-lg border ' + (p.id === state.currentPatientId ? 'border-cyan-500 bg-cyan-50' : 'border-slate-200')}>
+              <button onClick={() => { dispatch({ type: 'SET_CURRENT_PATIENT', payload: p.id }); setOpen(false); }} className="flex items-center gap-3 flex-1 text-left">
+                <div className="w-10 h-10 rounded-full bg-cyan-100 text-cyan-700 flex items-center justify-center font-semibold">{p.name[0]}</div>
+                <div><div className="font-medium">{p.name}</div><div className="text-xs text-slate-500">{p.conditions?.slice(0,30)}</div></div>
+              </button>
+              <button onClick={() => { setEditing(p); setOpen(false); }} className="text-slate-500 text-sm px-2">{t('edit', lang)}</button>
+            </div>
+          ))}
+        </div>
+        <Btn onClick={() => { setEditing({}); setOpen(false); }} className="w-full">{t('addPatient', lang)}</Btn>
+      </Modal>
+      {editing && <PatientEditor patient={editing} onClose={() => setEditing(null)} lang={lang} />}
+    </>
+  );
+}
+
+// ========== Root ==========
+function DebugPage({ onClose }) {
+  const [result, setResult] = useState('載入中...');
+  useEffect(() => {
+    (async () => {
+      const tok = getToken();
+      const lines = [];
+      lines.push('=== 前端狀態 ===');
+      lines.push('BACKEND_URL: ' + (BACKEND_URL || '(空)'));
+      lines.push('USE_BACKEND: ' + USE_BACKEND);
+      lines.push('Token 存在: ' + (tok ? '是' : '否'));
+      lines.push('Token 長度: ' + tok.length);
+      lines.push('Token 前 30 字: ' + tok.slice(0, 30));
+      lines.push('Token 段數: ' + (tok ? tok.split('.').length : 0));
+      lines.push('');
+      lines.push('=== Worker /health ===');
+      try {
+        const r = await fetch(BACKEND_URL + '/health');
+        lines.push('Status: ' + r.status);
+        lines.push('Body: ' + await r.text());
+      } catch (e) { lines.push('ERROR: ' + e.message); }
+      lines.push('');
+      lines.push('=== Worker /api/debug (帶 token) ===');
+      try {
+        const r = await fetch(BACKEND_URL + '/api/debug?t=' + encodeURIComponent(tok), { headers: tok ? { 'Authorization': 'Bearer ' + tok } : {} });
+        lines.push('Status: ' + r.status);
+        lines.push('Body: ' + JSON.stringify(await r.json(), null, 2));
+      } catch (e) { lines.push('ERROR: ' + e.message); }
+      lines.push('');
+      lines.push('=== Worker /api/auth/me ===');
+      try {
+        const r = await fetch(BACKEND_URL + '/api/auth/me', { headers: tok ? { 'Authorization': 'Bearer ' + tok } : {} });
+        lines.push('Status: ' + r.status);
+        lines.push('Body: ' + await r.text());
+      } catch (e) { lines.push('ERROR: ' + e.message); }
+      lines.push('');
+      lines.push('=== Worker /api/ai/chat (測試 POST) ===');
+      try {
+        const r = await fetch(BACKEND_URL + '/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(tok ? { 'Authorization': 'Bearer ' + tok } : {}) },
+          body: JSON.stringify({ system: '只回覆「OK」', user: '測試' })
+        });
+        lines.push('Status: ' + r.status);
+        lines.push('Body: ' + await r.text());
+      } catch (e) { lines.push('ERROR: ' + e.message); }
+      setResult(lines.join('\n'));
+    })();
+  }, []);
+  const copy = () => { navigator.clipboard.writeText(result).then(() => alert('已複製到剪貼簿')); };
+  return (
+    <div className="fixed inset-0 z-50 bg-white overflow-y-auto">
+      <div className="sticky top-0 bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center">
+        <div className="font-bold">診斷資訊</div>
+        <div className="flex gap-2">
+          <button onClick={copy} className="px-3 py-1.5 bg-cyan-600 text-white rounded text-sm">複製全部</button>
+          <button onClick={onClose} className="px-3 py-1.5 bg-slate-200 rounded text-sm">關閉</button>
+        </div>
+      </div>
+      <pre className="p-4 text-xs font-mono whitespace-pre-wrap">{result}</pre>
+    </div>
+  );
+}
+
+function Root() {
+  const [profile, setProfile] = useState(null);
+  const [lang, setLang] = useState('zh');
+  const [checkingSession, setCheckingSession] = useState(USE_BACKEND);
+  const [showDebug, setShowDebug] = useState(location.hash === '#debug');
+  useEffect(() => {
+    const onHash = () => setShowDebug(location.hash === '#debug');
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  useEffect(() => {
+    // 有後端：只信後端的說法
+    if (USE_BACKEND) {
+      const tok = getToken();
+      if (!tok) {
+        // 沒 token 直接顯示 Landing，不讀本地 profile（避免「假登入」狀態）
+        setCurrentProfileId(null);
+        setCheckingSession(false);
+        return;
+      }
+      apiFetch('/api/auth/me')
+        .then(r => r.json())
+        .then(d => {
+          if (d.user) {
+            const p = { id: d.user.id, name: d.user.name, pic: d.user.pic, type: d.user.provider || 'line' };
+            const list = loadProfileIndex();
+            if (!list.find(x => x.id === p.id)) { list.push(p); saveProfileIndex(list); }
+            setCurrentProfileId(p.id);
+            setProfile(p);
+            const st = loadState(p.id);
+            if (st.settings?.lang) setLang(st.settings.lang);
+          } else {
+            // token 無效（已過期或 JWT_SECRET 改過）→ 清乾淨，回到 Landing 重新登入
+            setToken('');
+            setCurrentProfileId(null);
+          }
+        })
+        .catch(() => { setToken(''); setCurrentProfileId(null); })
+        .finally(() => setCheckingSession(false));
+      return;
+    }
+    // 無後端：只讀本地
+    const pid = getCurrentProfileId();
+    if (pid) {
+      const list = loadProfileIndex();
+      const found = list.find(p => p.id === pid);
+      if (found) {
+        setProfile(found);
+        const st = loadState(found.id);
+        if (st.settings?.lang) setLang(st.settings.lang);
+      }
+    }
+  }, []);
+
+  const handleLogin = (p) => {
+    const list = loadProfileIndex();
+    if (!list.find(x => x.id === p.id)) list.push(p);
+    saveProfileIndex(list);
+    setCurrentProfileId(p.id);
+    setProfile(p);
+  };
+  const handleLogout = async () => {
+    if (!confirm('Logout?')) return;
+    if (USE_BACKEND) {
+      try { await apiFetch('/api/auth/logout', { method: 'POST' }); } catch(e){}
+      setToken('');
+    }
+    setCurrentProfileId(null);
+    setProfile(null);
+  };
+
+  if (showDebug) return <DebugPage onClose={() => { location.hash = ''; setShowDebug(false); }} />;
+  if (checkingSession) return <div className="min-h-screen flex items-center justify-center text-slate-500 text-sm">載入中…</div>;
+
+  if (!profile) return <Landing onLogin={handleLogin} lang={lang} setLang={setLang} />;
+
+  return <MainApp profile={profile} onLogout={handleLogout} lang={lang} onLangChange={setLang} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+</body>
+</html>

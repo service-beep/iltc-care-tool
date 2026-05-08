@@ -1,0 +1,14 @@
+name = "iltc-backend"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# D1 資料庫綁定（部署前請替換 database_id）
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "iltc-data"
+# database_id = "請填入你的 D1 database id"
+
+# KV 命名空間（rate limit + AI quota 用）
+# [[kv_namespaces]]
+# binding = "KV"
+# id = "請填入你的 KV namespace id"
