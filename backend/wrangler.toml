@@ -2,17 +2,26 @@ name = "billowing-river-dcf6iltc-backend"
 main = "worker.js"
 compatibility_date = "2024-09-23"
 
-# D1 與 KV binding 暫時用 Cloudflare Dashboard 手動設定。
-# 拿到 ID 後再把下面區塊取消註解、填入真實 UUID，commit 後永久穩定。
-#
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "iltc-data"
-# database_id = "REPLACE_WITH_REAL_UUID"
+# D1 資料庫 binding（雲端同步、共享機制都靠這個）
+# 直接在這裡宣告 → 每次 Workers Builds 部署都會自動綁定，不會再消失
+[[d1_databases]]
+binding = "DB"
+database_name = "iltc-data"
+database_id = "27349fc1-03f3-46b3-822d-7f8e9ea1a553"
+
+# KV namespace（用於 AI quota 與 IP rate limit）
+# 目前還沒建 → 保持註解狀態。Worker 內部有 fallback，沒綁也能跑。
+# 之後若想啟用：Cloudflare → Storage & Databases → KV → Create namespace → 拿 ID 填這裡
 #
 # [[kv_namespaces]]
 # binding = "KV"
 # id = "REPLACE_WITH_REAL_KV_ID"
+
+# Secrets（不寫在這裡）
+# 用 Cloudflare Dashboard → Worker → Settings → Variables and Secrets 設定：
+#   JWT_SECRET, LINE_CHANNEL_ID, LINE_CHANNEL_SECRET, LINE_REDIRECT_URI,
+#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
+#   GEMINI_API_KEY, ALLOWED_ORIGINS, FRONTEND_URL
 
 [vars]
 # 公開變數可寫在這（目前沒有）
