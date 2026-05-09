@@ -2,30 +2,17 @@ name = "billowing-river-dcf6iltc-backend"
 main = "worker.js"
 compatibility_date = "2024-09-23"
 
-# ⚠️ 重要：D1 與 KV 的 binding 必須在這個檔案裡宣告，否則 Workers Builds 部署時
-#         會把 Cloudflare Dashboard 上手動加的 binding 全部清掉。
+# D1 與 KV binding 暫時用 Cloudflare Dashboard 手動設定。
+# 拿到 ID 後再把下面區塊取消註解、填入真實 UUID，commit 後永久穩定。
 #
-# 如何拿到 ID：
-#   D1：Cloudflare → Storage & Databases → D1 → 點 iltc-data → 複製 Database ID
-#   KV：Cloudflare → Storage & Databases → KV → 點你的 namespace → 複製 ID
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "iltc-data"
+# database_id = "REPLACE_WITH_REAL_UUID"
 #
-# 拿到後把下面 TODO_xxx 換成真正的 ID，再 commit 推上 GitHub，下次就不會掉。
-
-[[d1_databases]]
-binding = "DB"
-database_name = "iltc-data"
-database_id = "TODO_PASTE_D1_DATABASE_ID_HERE"
-
-# KV 用於 AI quota 與 IP rate limit。沒有也能跑（自動 fallback 不限制），
-# 但建議建一個。建好後填 ID 並把下面四行最前面的 # 拿掉。
 # [[kv_namespaces]]
 # binding = "KV"
-# id = "TODO_PASTE_KV_NAMESPACE_ID_HERE"
-
-# Secrets（不要寫在這裡，要用 Cloudflare Dashboard → Variables and Secrets 設定）
-#   JWT_SECRET, LINE_CHANNEL_ID, LINE_CHANNEL_SECRET, LINE_REDIRECT_URI,
-#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
-#   GEMINI_API_KEY, ALLOWED_ORIGINS, FRONTEND_URL
+# id = "REPLACE_WITH_REAL_KV_ID"
 
 [vars]
 # 公開變數可寫在這（目前沒有）
